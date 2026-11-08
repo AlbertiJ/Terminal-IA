@@ -1,0 +1,6 @@
+{
+  "name": "Termux AI",
+  "description": "Consola de terminal libre estilo Termux con integración de agentes Claude y OpenClaw para Android.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
