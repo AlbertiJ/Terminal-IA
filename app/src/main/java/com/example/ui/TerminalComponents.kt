@@ -445,7 +445,7 @@ fun ExtraKeysBar(
     val scrollState1 = rememberScrollState()
 
     val primaryKeys = listOf("ESC", "TAB", "CTRL", "ALT", "↑", "↓", "|", "/", "-", "~", "\"", "$")
-    val shortcutKeys = listOf("scripts", "history", "ssh", "ip", "clear", "neofetch", "claude", "openclaw")
+    val shortcutKeys = listOf("scripts", "history", "logs", "ssh", "ip", "clear", "neofetch", "claude", "openclaw")
 
     Column(
         modifier = Modifier
@@ -486,6 +486,7 @@ fun ExtraKeysBar(
                 Surface(
                     color = when (s) {
                         "scripts" -> Color(0xFF00E676).copy(alpha = 0.15f)
+                        "logs" -> theme.promptUser.copy(alpha = 0.15f)
                         "claude" -> theme.claudeColor.copy(alpha = 0.2f)
                         "openclaw" -> theme.openClawColor.copy(alpha = 0.2f)
                         else -> theme.background
@@ -495,6 +496,7 @@ fun ExtraKeysBar(
                         1.dp,
                         when (s) {
                             "scripts" -> Color(0xFF00E676).copy(alpha = 0.5f)
+                            "logs" -> theme.promptUser.copy(alpha = 0.5f)
                             "claude" -> theme.claudeColor.copy(alpha = 0.6f)
                             "openclaw" -> theme.openClawColor.copy(alpha = 0.6f)
                             else -> theme.accentText.copy(alpha = 0.3f)
@@ -511,7 +513,7 @@ fun ExtraKeysBar(
                         fontWeight = FontWeight.Bold,
                         color = when (s) {
                             "scripts" -> Color(0xFF00E676)
-                            "history" -> theme.promptUser
+                            "history", "logs" -> theme.promptUser
                             "claude" -> theme.claudeColor
                             "openclaw" -> theme.openClawColor
                             else -> theme.accentText

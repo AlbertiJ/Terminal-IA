@@ -20,6 +20,8 @@ import com.example.model.TerminalLine
 import com.example.model.TerminalSession
 import com.example.server.RemoteConsoleServer
 import com.example.server.WebTerminalServer
+import com.example.controller.TerminalController
+import com.example.controller.TerminalLogLevel
 import com.example.data.db.CommandHistoryRepository
 import com.example.data.db.TermuxDatabase
 import com.example.script.ScriptManager
@@ -49,6 +51,8 @@ data class TerminalUiState(
     val hasRemoteCredentials: Boolean = false,
     val remoteUsername: String = "user",
     val showScriptManagerDialog: Boolean = false,
+    val showLogsDialog: Boolean = false,
+    val autocompleteSuggestions: List<String> = emptyList(),
     val editorState: EditorState? = null
 )
 
@@ -67,6 +71,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     private val database = TermuxDatabase.getDatabase(application)
     val historyRepository = CommandHistoryRepository(database.commandHistoryDao())
     val scriptManager: ScriptManager get() = engine.scriptManager
+    val terminalController = TerminalController(vfs)
 
     private lateinit var remoteServer: RemoteConsoleServer
     private lateinit var webServer: WebTerminalServer
@@ -201,8 +206,28 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onInputChange(newInput: String) {
-        _uiState.update { it.copy(input = newInput) }
+        val sessionId = _uiState.value.activeSessionId
+        val session = _uiState.value.sessions.firstOrNull { it.id == sessionId }
+        val dir = session?.currentDirectory ?: "/home/user"
+        val comp = if (newInput.isNotBlank()) terminalController.computeCompletions(newInput, dir) else null
+        _uiState.update {
+            it.copy(
+                input = newInput,
+                autocompleteSuggestions = if (comp != null && comp.suggestions.size in 1..8) comp.suggestions else emptyList()
+            )
+        }
         historyIndex = -1
+    }
+
+    fun applySuggestion(suggestion: String) {
+        val current = _uiState.value.input
+        val sessionId = _uiState.value.activeSessionId
+        val session = _uiState.value.sessions.firstOrNull { it.id == sessionId }
+        val dir = session?.currentDirectory ?: "/home/user"
+        val comp = terminalController.computeCompletions(current, dir)
+        val lastToken = comp.matchedPrefix
+        val base = current.substring(0, current.length - lastToken.length)
+        onInputChange("$base$suggestion")
     }
 
     fun selectSession(sessionId: String) {
@@ -266,6 +291,13 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         val trimmedCmd = rawInput.trim()
         preferences.appendCommandToHistory(trimmedCmd)
         historyIndex = -1
+
+        terminalController.log(
+            level = TerminalLogLevel.COMMAND,
+            tag = "EXEC",
+            message = "$trimmedCmd (dir: ${session.currentDirectory})",
+            sessionId = sessionId
+        )
 
         viewModelScope.launch {
             historyRepository.recordCommand(
@@ -349,6 +381,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                 onInputChange("history")
                 executeCurrentCommand()
             }
+            "logs" -> openLogsDialog()
         }
     }
 
@@ -356,31 +389,21 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         val current = _uiState.value.input
         if (current.isBlank()) return
 
-        val knownCommands = listOf(
-            "help", "clear", "neofetch", "ls", "cd", "pwd", "cat", "echo",
-            "mkdir", "rm", "touch", "nano", "curl", "ping", "python", "pkg",
-            "claude", "openclaw", "history", "whoami", "uname", "env", "export",
-            "ip", "ifconfig", "sshd", "telnetd", "passwd", "agent"
-        )
-
-        val lastWord = current.split(" ").lastOrNull() ?: ""
-        if (lastWord.isBlank()) return
-
-        val match = knownCommands.firstOrNull { it.startsWith(lastWord, ignoreCase = true) }
-        if (match != null) {
-            val prefix = current.substring(0, current.length - lastWord.length)
-            onInputChange(prefix + match + " ")
-            return
-        }
-
         val sessionId = _uiState.value.activeSessionId
         val session = _uiState.value.sessions.firstOrNull { it.id == sessionId }
         val dir = session?.currentDirectory ?: "/home/user"
-        val files = vfs.listDirectory(dir).getOrNull() ?: emptyList()
-        val fileMatch = files.firstOrNull { it.name.startsWith(lastWord, ignoreCase = true) }
-        if (fileMatch != null) {
-            val prefix = current.substring(0, current.length - lastWord.length)
-            onInputChange(prefix + fileMatch.name + if (fileMatch.isDirectory) "/" else " ")
+
+        val result = terminalController.computeCompletions(current, dir)
+        if (result.completedInput != null) {
+            onInputChange(result.completedInput)
+        } else if (result.suggestions.size == 1) {
+            val single = result.suggestions[0]
+            val lastToken = result.matchedPrefix
+            val base = current.substring(0, current.length - lastToken.length)
+            onInputChange("$base$single")
+        } else if (result.suggestions.isNotEmpty()) {
+            val suggestionsLine = result.suggestions.joinToString("   ")
+            appendLine(sessionId, TerminalLine(text = suggestionsLine, type = LineType.SYSTEM))
         }
     }
 
@@ -488,6 +511,15 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     fun closeScriptManager() {
         _uiState.update { it.copy(showScriptManagerDialog = false) }
+    }
+
+    fun openLogsDialog() {
+        vibrateKey()
+        _uiState.update { it.copy(showLogsDialog = true) }
+    }
+
+    fun closeLogsDialog() {
+        _uiState.update { it.copy(showLogsDialog = false) }
     }
 
     fun openEditorForPath(path: String, content: String) {

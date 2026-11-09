@@ -199,4 +199,53 @@ class ExampleRobolectricTest {
     repo.clearHistory()
     assertEquals(0, repo.count())
   }
+
+  @Test
+  fun `terminal controller computes command and subcommand completions`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val vfs = VirtualFileSystem(context)
+    val controller = com.example.controller.TerminalController(vfs)
+
+    // Primary command completion
+    val comp1 = controller.computeCompletions("neo", "/home/user")
+    assertEquals("neofetch ", comp1.completedInput)
+
+    // Subcommand completion
+    val comp2 = controller.computeCompletions("script ", "/home/user")
+    assertTrue(comp2.suggestions.contains("run"))
+    assertTrue(comp2.suggestions.contains("list"))
+    assertTrue(comp2.suggestions.contains("chmod"))
+
+    // Flag completion
+    val comp3 = controller.computeCompletions("chmod +", "/home/user")
+    assertTrue(comp3.suggestions.contains("+x"))
+  }
+
+  @Test
+  fun `terminal controller records logs with RedTeam and BlueTeam tags and exports json`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val vfs = VirtualFileSystem(context)
+    val controller = com.example.controller.TerminalController(vfs)
+
+    controller.clearLogs()
+    controller.log(com.example.controller.TerminalLogLevel.INFO, "TEST", "Inicialización completada")
+    controller.logRedTeamEvent("SIMULATION", "sh /home/user/scripts/syscheck.sh | claude 'audita'")
+    controller.logBlueTeamEvent("SANDBOX", "Bloqueo preventivo de sudo en script de usuario no privilegiado")
+
+    val currentLogs = controller.logs.value
+    assertTrue(currentLogs.size >= 3)
+
+    val redTeamLogs = controller.getLogsByLevel(com.example.controller.TerminalLogLevel.AUDIT_RED_TEAM)
+    assertEquals(1, redTeamLogs.size)
+    assertTrue(redTeamLogs[0].message.contains("#RedTeam"))
+
+    val blueTeamLogs = controller.getLogsByLevel(com.example.controller.TerminalLogLevel.AUDIT_BLUE_TEAM)
+    assertEquals(1, blueTeamLogs.size)
+    assertTrue(blueTeamLogs[0].message.contains("#BlueTeam"))
+
+    val jsonOutput = controller.exportLogsAsJson()
+    assertTrue(jsonOutput.startsWith("["))
+    assertTrue(jsonOutput.contains("AUDIT_RED_TEAM"))
+    assertTrue(jsonOutput.contains("AUDIT_BLUE_TEAM"))
+  }
 }

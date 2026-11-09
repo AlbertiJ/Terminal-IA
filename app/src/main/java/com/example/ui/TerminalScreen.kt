@@ -40,7 +40,10 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Lan
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.VerticalSplit
@@ -139,6 +142,7 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                 onOpenRemoteAccess = { viewModel.openRemoteAccessDialog() },
                 onOpenFileManager = { viewModel.openFileManager() },
                 onOpenScriptManager = { viewModel.openScriptManager() },
+                onOpenLogs = { viewModel.openLogsDialog() },
                 onToggleSplitScreen = { viewModel.toggleSplitScreen() },
                 onOpenQuickActions = { viewModel.openQuickActions() },
                 onClear = { viewModel.onExtraKeyPressed("clear") }
@@ -292,6 +296,46 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                 }
             }
 
+            // Dynamic Autocomplete Suggestions Bar (TerminalController)
+            if (uiState.autocompleteSuggestions.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(theme.surface.copy(alpha = 0.95f))
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "TAB:",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp,
+                        color = theme.accentText,
+                        fontWeight = FontWeight.Bold
+                    )
+                    for (sug in uiState.autocompleteSuggestions) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = theme.background,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, theme.accentText.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .clickable { viewModel.applySuggestion(sug) }
+                                .testTag("suggestion_$sug")
+                        ) {
+                            Text(
+                                text = sug,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = theme.primaryText,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
             // Command Input Row
             TerminalInputBar(
                 input = uiState.input,
@@ -370,6 +414,14 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
             )
         }
 
+        if (uiState.showLogsDialog) {
+            TerminalLogsDialog(
+                controller = viewModel.terminalController,
+                theme = theme,
+                onDismiss = { viewModel.closeLogsDialog() }
+            )
+        }
+
         if (uiState.showRemoteAccessDialog) {
             RemoteAccessDialog(
                 theme = theme,
@@ -414,6 +466,7 @@ fun TerminalTopBar(
     onOpenRemoteAccess: () -> Unit,
     onOpenFileManager: () -> Unit,
     onOpenScriptManager: () -> Unit,
+    onOpenLogs: () -> Unit,
     onToggleSplitScreen: () -> Unit,
     onOpenQuickActions: () -> Unit,
     onClear: () -> Unit
@@ -547,6 +600,21 @@ fun TerminalTopBar(
                             )
                         }
                     }
+                }
+
+                // Logs and Telemetry button (#RedTeam & #BlueTeam)
+                IconButton(
+                    onClick = onOpenLogs,
+                    modifier = Modifier
+                        .size(30.dp)
+                        .testTag("logs_top_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Security,
+                        contentDescription = "Logs y Auditoría de Seguridad",
+                        tint = theme.promptUser,
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
 
                 IconButton(
