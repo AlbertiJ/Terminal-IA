@@ -1,13 +1,14 @@
 package com.example.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,7 +18,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -35,23 +36,19 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Lan
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.VerticalSplit
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -59,7 +56,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -75,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.LineType
 import com.example.model.SessionType
+import com.example.viewmodel.AppTerminalMode
 import com.example.viewmodel.TerminalViewModel
 
 @Composable
@@ -87,7 +84,6 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
     val currentSession = uiState.sessions.firstOrNull { it.id == uiState.activeSessionId }
     val currentLines = uiState.sessionLines[uiState.activeSessionId] ?: emptyList()
 
-    // Filter agent-specific lines for Split Screen Monitor
     val agentLines = currentLines.filter {
         it.type == LineType.AGENT_CLAUDE || it.type == LineType.AGENT_OPENCLAW || it.type == LineType.AGENT_STEP
     }
@@ -130,14 +126,14 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
         ) {
             // Top App Bar
             TerminalTopBar(
-                currentSessionTitle = currentSession?.title ?: "bash",
                 currentPath = currentSession?.currentDirectory ?: "/home/user",
                 isExecuting = uiState.isExecuting,
-                isRemoteServerRunning = uiState.isRemoteServerRunning,
+                isRealSshConnected = uiState.realSshConnectionState is RealSshConnectionState.Connected,
                 isWebRunning = uiState.isWebTerminalRunning,
                 isSplitScreenMode = uiState.isSplitScreenMode,
                 pulseAlpha = alphaAnim,
                 theme = theme,
+                onOpenWizard = { viewModel.openSetupWizard() },
                 onOpenSettings = { viewModel.openSettingsDialog() },
                 onOpenRemoteAccess = { viewModel.openRemoteAccessDialog() },
                 onOpenFileManager = { viewModel.openFileManager() },
@@ -148,27 +144,149 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                 onClear = { viewModel.onExtraKeyPressed("clear") }
             )
 
-            // Multi-tab Session Bar
-            SessionTabsBar(
-                sessions = uiState.sessions,
-                activeSessionId = uiState.activeSessionId,
+            // Strict Mode Switcher: REAL (Termux SSH) vs PRACTICE (Simulated Sandbox)
+            ModeSelectorBar(
+                currentMode = uiState.terminalMode,
+                isRealConnected = uiState.realSshConnectionState is RealSshConnectionState.Connected,
                 theme = theme,
-                onSelectSession = { viewModel.selectSession(it) },
-                onCreateSession = { viewModel.createSession(it) },
-                onCloseSession = { viewModel.closeSession(it) }
+                onSelectMode = { viewModel.setTerminalMode(it) }
             )
 
-            // Main Console Area (Single or Split Screen)
-            if (uiState.isSplitScreenMode) {
-                // Split Screen Mode: Upper half is shell, lower half is Agent Monitor
-                Column(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    // Top Half: Shell Buffer
+            if (uiState.terminalMode == AppTerminalMode.REAL_TERMUX) {
+                // REAL MODE: pure VT100/xterm PTY over Termux SSH
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    RealTerminalPane(
+                        theme = theme,
+                        fontSizeSp = uiState.settings.fontSizeSp,
+                        sshPort = uiState.termuxSshPort,
+                        isTermuxInstalled = uiState.isTermuxInstalled,
+                        connectionState = uiState.realSshConnectionState,
+                        pendingHostKeyMismatch = uiState.pendingHostKeyMismatch,
+                        onRegisterByteSink = { viewModel.registerRealByteSink(it) },
+                        onKeyboardInputBytes = { viewModel.sendRealKeyboardBytes(it) },
+                        onViewportResize = { cols, rows -> viewModel.resizeRealTerminal(cols, rows) },
+                        onConnect = { cols, rows -> viewModel.connectRealTerminal(cols, rows) },
+                        onDisconnect = { viewModel.disconnectRealTerminal() },
+                        onOpenWizard = { viewModel.openSetupWizard() },
+                        onSwitchToPracticeMode = { viewModel.setTerminalMode(AppTerminalMode.PRACTICE_SIMULATED) },
+                        onAcceptChangedHostKey = { mismatch -> viewModel.acceptChangedHostKey(mismatch, reconnectAfter = true) },
+                        onDismissHostKeyMismatch = { viewModel.dismissHostKeyMismatch() }
+                    )
+                }
+
+                // Extra Keys Bar sends ANSI/control bytes to SSH PTY in Real Mode
+                ExtraKeysBar(
+                    theme = theme,
+                    onKeyPressed = { viewModel.onExtraKeyPressed(it) }
+                )
+            } else {
+                // PRACTICE MODE: strictly labeled and isolated simulated TerminalEngine
+                PracticeModeWarningBanner(
+                    theme = theme,
+                    onSwitchToReal = { viewModel.setTerminalMode(AppTerminalMode.REAL_TERMUX) }
+                )
+
+                // Multi-tab Session Bar (Practice / Simulated Agents)
+                SessionTabsBar(
+                    sessions = uiState.sessions,
+                    activeSessionId = uiState.activeSessionId,
+                    theme = theme,
+                    onSelectSession = { viewModel.selectSession(it) },
+                    onCreateSession = { viewModel.createSession(it) },
+                    onCloseSession = { viewModel.closeSession(it) }
+                )
+
+                // Main Console Area (Single or Split Screen)
+                if (uiState.isSplitScreenMode) {
+                    Column(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            items(currentLines, key = { it.id }) { line ->
+                                TerminalLineView(
+                                    line = line,
+                                    theme = theme,
+                                    fontSizeSp = uiState.settings.fontSizeSp,
+                                    onRunSuggestedCommand = { cmd ->
+                                        viewModel.onInputChange(cmd)
+                                        viewModel.executeCurrentCommand()
+                                    }
+                                )
+                            }
+                        }
+
+                        Surface(
+                            color = theme.surface,
+                            modifier = Modifier.fillMaxWidth().height(24.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.VerticalSplit,
+                                    contentDescription = null,
+                                    tint = theme.openClawColor,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "MONITOR DIVIDIDO: AGENTES CLAUDE & OPENCLAW (PRÁCTICA)",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = theme.openClawColor
+                                )
+                            }
+                        }
+
+                        LazyColumn(
+                            state = agentListState,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .background(theme.surface.copy(alpha = 0.4f))
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            if (agentLines.isEmpty()) {
+                                item {
+                                    Text(
+                                        text = "(Esperando ejecuciones de agentes. Ejecuta: claude o openclaw)",
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        color = theme.primaryText.copy(alpha = 0.4f),
+                                        modifier = Modifier.padding(8.dp)
+                                    )
+                                }
+                            } else {
+                                items(agentLines, key = { "split_" + it.id }) { line ->
+                                    TerminalLineView(
+                                        line = line,
+                                        theme = theme,
+                                        fontSizeSp = uiState.settings.fontSizeSp,
+                                        onRunSuggestedCommand = { cmd ->
+                                            viewModel.onInputChange(cmd)
+                                            viewModel.executeCurrentCommand()
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .testTag("terminal_output_list"),
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         items(currentLines, key = { it.id }) { line ->
@@ -182,180 +300,119 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                                 }
                             )
                         }
-                    }
 
-                    // Split Divider with title
-                    Surface(
-                        color = theme.surface,
-                        modifier = Modifier.fillMaxWidth().height(24.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.VerticalSplit,
-                                contentDescription = null,
-                                tint = theme.openClawColor,
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "MONITOR DIVIDIDO: AGENTES CLAUDE & OPENCLAW EN VIVO",
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = theme.openClawColor
-                            )
+                        if (uiState.isExecuting) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(theme.primaryText)
+                                            .alpha(alphaAnim)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Procesando respuesta del entorno simulado...",
+                                        color = theme.primaryText.copy(alpha = 0.8f),
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
                         }
                     }
+                }
 
-                    // Bottom Half: Agent Telemetry & Reasoning Inspector
-                    LazyColumn(
-                        state = agentListState,
+                // Dynamic Autocomplete Suggestions Bar (TerminalController)
+                if (uiState.autocompleteSuggestions.isNotEmpty()) {
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
                             .fillMaxWidth()
-                            .background(theme.surface.copy(alpha = 0.4f))
-                            .padding(horizontal = 8.dp, vertical = 2.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                            .background(theme.surface.copy(alpha = 0.95f))
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (agentLines.isEmpty()) {
-                            item {
+                        Text(
+                            text = "TAB:",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            color = theme.accentText,
+                            fontWeight = FontWeight.Bold
+                        )
+                        for (sug in uiState.autocompleteSuggestions) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = theme.background,
+                                border = BorderStroke(1.dp, theme.accentText.copy(alpha = 0.5f)),
+                                modifier = Modifier
+                                    .clickable { viewModel.applySuggestion(sug) }
+                                    .testTag("suggestion_$sug")
+                            ) {
                                 Text(
-                                    text = "(Esperando ejecuciones de agentes. Ejecuta: claude o openclaw)",
+                                    text = sug,
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
-                                    color = theme.primaryText.copy(alpha = 0.4f),
-                                    modifier = Modifier.padding(8.dp)
-                                )
-                            }
-                        } else {
-                            items(agentLines, key = { "split_" + it.id }) { line ->
-                                TerminalLineView(
-                                    line = line,
-                                    theme = theme,
-                                    fontSizeSp = uiState.settings.fontSizeSp,
-                                    onRunSuggestedCommand = { cmd ->
-                                        viewModel.onInputChange(cmd)
-                                        viewModel.executeCurrentCommand()
-                                    }
+                                    fontWeight = FontWeight.Bold,
+                                    color = theme.primaryText,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                 )
                             }
                         }
                     }
                 }
-            } else {
-                // Standard Single Console View
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                        .testTag("terminal_output_list"),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    items(currentLines, key = { it.id }) { line ->
-                        TerminalLineView(
-                            line = line,
-                            theme = theme,
-                            fontSizeSp = uiState.settings.fontSizeSp,
-                            onRunSuggestedCommand = { cmd ->
-                                viewModel.onInputChange(cmd)
-                                viewModel.executeCurrentCommand()
-                            }
-                        )
-                    }
 
-                    if (uiState.isExecuting) {
-                        item {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(theme.primaryText)
-                                        .alpha(alphaAnim)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Procesando respuesta del agente / shell...",
-                                    color = theme.primaryText.copy(alpha = 0.8f),
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-                    }
-                }
+                // Command Input Row (Practice Mode only)
+                TerminalInputBar(
+                    input = uiState.input,
+                    sessionType = currentSession?.type ?: SessionType.SHELL,
+                    theme = theme,
+                    fontSizeSp = uiState.settings.fontSizeSp,
+                    isExecuting = uiState.isExecuting,
+                    onInputChange = { viewModel.onInputChange(it) },
+                    onExecute = { viewModel.executeCurrentCommand() }
+                )
+
+                // Extra Keys Bar
+                ExtraKeysBar(
+                    theme = theme,
+                    onKeyPressed = { viewModel.onExtraKeyPressed(it) }
+                )
             }
-
-            // Dynamic Autocomplete Suggestions Bar (TerminalController)
-            if (uiState.autocompleteSuggestions.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(theme.surface.copy(alpha = 0.95f))
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "TAB:",
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp,
-                        color = theme.accentText,
-                        fontWeight = FontWeight.Bold
-                    )
-                    for (sug in uiState.autocompleteSuggestions) {
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = theme.background,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, theme.accentText.copy(alpha = 0.5f)),
-                            modifier = Modifier
-                                .clickable { viewModel.applySuggestion(sug) }
-                                .testTag("suggestion_$sug")
-                        ) {
-                            Text(
-                                text = sug,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = theme.primaryText,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Command Input Row
-            TerminalInputBar(
-                input = uiState.input,
-                currentDir = currentSession?.currentDirectory ?: "/home/user",
-                sessionType = currentSession?.type ?: SessionType.SHELL,
-                theme = theme,
-                fontSizeSp = uiState.settings.fontSizeSp,
-                isExecuting = uiState.isExecuting,
-                onInputChange = { viewModel.onInputChange(it) },
-                onExecute = { viewModel.executeCurrentCommand() }
-            )
-
-            // Termux Extra Keys Bar (Virtual row above keyboard)
-            ExtraKeysBar(
-                theme = theme,
-                onKeyPressed = { viewModel.onExtraKeyPressed(it) }
-            )
         }
 
         // Dialogs
+        if (uiState.showSetupWizard) {
+            TermuxSetupWizardDialog(
+                theme = theme,
+                isTermuxInstalled = uiState.isTermuxInstalled,
+                setupCommandCopied = uiState.setupCommandCopied,
+                sshPort = uiState.termuxSshPort,
+                sshUsername = uiState.termuxSshUsername,
+                publicKeyFingerprint = uiState.sshPublicKeyFingerprint.ifBlank { "Generando clave Ed25519..." },
+                isTestingConnection = uiState.isTestingSshConnection,
+                diagnosticResult = uiState.sshDiagnosticResult,
+                pendingHostKeyMismatch = uiState.pendingHostKeyMismatch,
+                onRefreshTermuxStatus = { viewModel.refreshTermuxInstallStatus() },
+                onOpenTermuxDownload = { viewModel.openTermuxDownloadPage() },
+                onLaunchTermux = { viewModel.launchTermuxApp() },
+                onUpdatePortAndUser = { p, u -> viewModel.updateTermuxPortAndUser(p, u) },
+                onCopySetupCommand = { p -> viewModel.buildAndTrackSetupCommand(p) },
+                onTestConnection = { p, u -> viewModel.testTermuxConnection(p, u) },
+                onAcceptChangedHostKey = { mismatch -> viewModel.acceptChangedHostKey(mismatch, reconnectAfter = false) },
+                onDismissHostKeyMismatch = { viewModel.dismissHostKeyMismatch() },
+                onConnectShellAndClose = { viewModel.connectRealTerminal() },
+                onDismiss = { viewModel.closeSetupWizard() }
+            )
+        }
+
         if (uiState.showSettingsDialog) {
             AgentSettingsDialog(
                 currentSettings = uiState.settings,
@@ -392,6 +449,7 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                 },
                 onRunFile = { path ->
                     viewModel.closeFileManager()
+                    viewModel.setTerminalMode(AppTerminalMode.PRACTICE_SIMULATED)
                     viewModel.onInputChange("bash $path")
                     viewModel.executeCurrentCommand()
                 }
@@ -408,6 +466,7 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                     viewModel.openEditorForPath(path, content)
                 },
                 onRunScript = { path ->
+                    viewModel.setTerminalMode(AppTerminalMode.PRACTICE_SIMULATED)
                     viewModel.onInputChange("bash $path")
                     viewModel.executeCurrentCommand()
                 }
@@ -425,14 +484,11 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
         if (uiState.showRemoteAccessDialog) {
             RemoteAccessDialog(
                 theme = theme,
-                isServerRunning = uiState.isRemoteServerRunning,
-                serverPort = uiState.remoteServerPort,
                 isWebRunning = uiState.isWebTerminalRunning,
                 webPort = uiState.webTerminalPort,
                 deviceIps = uiState.deviceIps,
                 currentUsername = uiState.remoteUsername,
                 hasCredentials = uiState.hasRemoteCredentials,
-                onToggleServer = { enabled, port -> viewModel.toggleRemoteServer(enabled, port) },
                 onToggleWebServer = { enabled, port -> viewModel.toggleWebTerminal(enabled, port) },
                 onSaveCredentials = { user, pass -> viewModel.saveRemoteCredentials(user, pass) },
                 onDismiss = { viewModel.closeRemoteAccessDialog() }
@@ -444,8 +500,15 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                 theme = theme,
                 onDismiss = { viewModel.closeQuickActions() },
                 onSelectAction = { cmd ->
-                    viewModel.onInputChange(cmd)
-                    viewModel.executeCurrentCommand()
+                    if (uiState.terminalMode == AppTerminalMode.REAL_TERMUX &&
+                        uiState.realSshConnectionState is RealSshConnectionState.Connected
+                    ) {
+                        viewModel.sendRealKeyboardBytes("$cmd\n".toByteArray())
+                    } else {
+                        viewModel.setTerminalMode(AppTerminalMode.PRACTICE_SIMULATED)
+                        viewModel.onInputChange(cmd)
+                        viewModel.executeCurrentCommand()
+                    }
                 }
             )
         }
@@ -453,15 +516,155 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
 }
 
 @Composable
+private fun ModeSelectorBar(
+    currentMode: AppTerminalMode,
+    isRealConnected: Boolean,
+    theme: com.example.model.TerminalThemePreset,
+    onSelectMode: (AppTerminalMode) -> Unit
+) {
+    Surface(
+        color = theme.surface.copy(alpha = 0.85f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val realSelected = currentMode == AppTerminalMode.REAL_TERMUX
+            Surface(
+                color = if (realSelected) Color(0xFF00E676).copy(alpha = 0.16f) else theme.background,
+                shape = RoundedCornerShape(6.dp),
+                border = BorderStroke(
+                    1.dp,
+                    if (realSelected) Color(0xFF00E676) else theme.primaryText.copy(alpha = 0.25f)
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { onSelectMode(AppTerminalMode.REAL_TERMUX) }
+                    .testTag("mode_tab_real")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(if (isRealConnected) Color(0xFF00E676) else Color(0xFFFFB300))
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Modo Real · Termux",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        fontWeight = if (realSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (realSelected) Color(0xFF00E676) else theme.primaryText.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            val practiceSelected = currentMode == AppTerminalMode.PRACTICE_SIMULATED
+            Surface(
+                color = if (practiceSelected) Color(0xFFFFB300).copy(alpha = 0.16f) else theme.background,
+                shape = RoundedCornerShape(6.dp),
+                border = BorderStroke(
+                    1.dp,
+                    if (practiceSelected) Color(0xFFFFB300) else theme.primaryText.copy(alpha = 0.25f)
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { onSelectMode(AppTerminalMode.PRACTICE_SIMULATED) }
+                    .testTag("mode_tab_practice")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Modo Práctica · Simulado",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        fontWeight = if (practiceSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (practiceSelected) Color(0xFFFFB300) else theme.primaryText.copy(alpha = 0.7f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PracticeModeWarningBanner(
+    theme: com.example.model.TerminalThemePreset,
+    onSwitchToReal: () -> Unit
+) {
+    Surface(
+        color = Color(0xFFFFB300).copy(alpha = 0.16f),
+        border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.7f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .testTag("practice_mode_banner")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = "Advertencia Modo Práctica",
+                    tint = Color(0xFFFFB300),
+                    modifier = Modifier.size(15.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "MODO PRÁCTICA (SIMULADO): NO ejecuta Linux real ni paquetes externos.",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFFFD54F)
+                )
+            }
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "Ir a Real",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF00E676),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(theme.background)
+                    .clickable { onSwitchToReal() }
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+@Composable
 fun TerminalTopBar(
-    currentSessionTitle: String,
     currentPath: String,
     isExecuting: Boolean,
-    isRemoteServerRunning: Boolean,
+    isRealSshConnected: Boolean,
     isWebRunning: Boolean,
     isSplitScreenMode: Boolean,
     pulseAlpha: Float,
     theme: com.example.model.TerminalThemePreset,
+    onOpenWizard: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenRemoteAccess: () -> Unit,
     onOpenFileManager: () -> Unit,
@@ -485,13 +688,13 @@ fun TerminalTopBar(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = Icons.Default.Terminal,
-                    contentDescription = "Termux AI",
+                    contentDescription = "Terminal-IA",
                     tint = theme.primaryText,
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "TERMUX AI",
+                    text = "TERMINAL-IA",
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
@@ -500,7 +703,6 @@ fun TerminalTopBar(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
-                // Directory badge
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(4.dp))
@@ -526,17 +728,29 @@ fun TerminalTopBar(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Online/Status dot
                 Box(
                     modifier = Modifier
                         .size(8.dp)
                         .clip(CircleShape)
-                        .background(if (isExecuting) theme.accentText else Color(0xFF00E676))
+                        .background(if (isExecuting) theme.accentText else if (isRealSshConnected) Color(0xFF00E676) else Color(0xFFFFB300))
                         .alpha(if (isExecuting) pulseAlpha else 1.0f)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
 
-                // File Explorer button
+                IconButton(
+                    onClick = onOpenWizard,
+                    modifier = Modifier
+                        .size(30.dp)
+                        .testTag("wizard_top_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Build,
+                        contentDescription = "Asistente de Conexión Termux",
+                        tint = if (isRealSshConnected) Color(0xFF00E676) else Color(0xFFFFB300),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+
                 IconButton(
                     onClick = onOpenFileManager,
                     modifier = Modifier.size(30.dp)
@@ -549,7 +763,6 @@ fun TerminalTopBar(
                     )
                 }
 
-                // Script Manager (.sh) button
                 IconButton(
                     onClick = onOpenScriptManager,
                     modifier = Modifier
@@ -564,7 +777,6 @@ fun TerminalTopBar(
                     )
                 }
 
-                // Split Screen toggle button
                 IconButton(
                     onClick = onToggleSplitScreen,
                     modifier = Modifier.size(30.dp)
@@ -577,7 +789,6 @@ fun TerminalTopBar(
                     )
                 }
 
-                // Remote Access SSH/Web button
                 IconButton(
                     onClick = onOpenRemoteAccess,
                     modifier = Modifier
@@ -587,11 +798,11 @@ fun TerminalTopBar(
                     Box(contentAlignment = Alignment.TopEnd) {
                         Icon(
                             imageVector = Icons.Default.Lan,
-                            contentDescription = "Acceso Remoto SSH / Web",
-                            tint = if (isRemoteServerRunning || isWebRunning) Color(0xFF00E676) else theme.primaryText.copy(alpha = 0.7f),
+                            contentDescription = "Consola Terminal Web",
+                            tint = if (isWebRunning) Color(0xFF00E676) else theme.primaryText.copy(alpha = 0.7f),
                             modifier = Modifier.size(17.dp)
                         )
-                        if (isRemoteServerRunning || isWebRunning) {
+                        if (isWebRunning) {
                             Box(
                                 modifier = Modifier
                                     .size(6.dp)
@@ -602,7 +813,6 @@ fun TerminalTopBar(
                     }
                 }
 
-                // Logs and Telemetry button (#RedTeam & #BlueTeam)
                 IconButton(
                     onClick = onOpenLogs,
                     modifier = Modifier
@@ -664,7 +874,6 @@ fun TerminalTopBar(
 @Composable
 fun TerminalInputBar(
     input: String,
-    currentDir: String,
     sessionType: SessionType,
     theme: com.example.model.TerminalThemePreset,
     fontSizeSp: Int,
@@ -673,13 +882,13 @@ fun TerminalInputBar(
     onExecute: () -> Unit
 ) {
     val promptPrefix = when (sessionType) {
-        SessionType.SHELL -> "$"
+        SessionType.SHELL -> "práctica$"
         SessionType.CLAUDE -> "claude>"
         SessionType.OPENCLAW -> "openclaw>"
     }
 
     val promptColor = when (sessionType) {
-        SessionType.SHELL -> theme.promptUser
+        SessionType.SHELL -> Color(0xFFFFB300)
         SessionType.CLAUDE -> theme.claudeColor
         SessionType.OPENCLAW -> theme.openClawColor
     }
@@ -713,7 +922,7 @@ fun TerminalInputBar(
                 cursorBrush = SolidColor(theme.primaryText),
                 keyboardOptions = KeyboardOptions(
                     imeAction = ImeAction.Send,
-                    autoCorrect = false
+                    autoCorrectEnabled = false
                 ),
                 keyboardActions = KeyboardActions(
                     onSend = { onExecute() }

@@ -301,4 +301,220 @@ class ExampleRobolectricTest {
     // Cleanup evil script
     vfs.deleteFile(evilBootPath)
   }
+
+  // =========================================================================
+  // FASE 1: Termux Setup Command, Ed25519/TOFU Keys & SSH Error Diagnostics
+  // =========================================================================
+
+  private fun inMemoryAesCipher(): com.example.ssh.KeyWrappingCipher {
+    val keyGen = javax.crypto.KeyGenerator.getInstance("AES").apply { init(256) }
+    val secretKey = keyGen.generateKey()
+    return object : com.example.ssh.KeyWrappingCipher {
+      override fun encrypt(plainBytes: ByteArray): String {
+        val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, secretKey)
+        val iv = cipher.iv
+        val out = cipher.doFinal(plainBytes)
+        val combined = iv + out
+        return android.util.Base64.encodeToString(combined, android.util.Base64.NO_WRAP)
+      }
+
+      override fun decrypt(encoded: String): ByteArray {
+        val combined = android.util.Base64.decode(encoded, android.util.Base64.NO_WRAP)
+        val iv = combined.copyOfRange(0, 12)
+        val enc = combined.copyOfRange(12, combined.size)
+        val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(javax.crypto.Cipher.DECRYPT_MODE, secretKey, javax.crypto.spec.GCMParameterSpec(128, iv))
+        return cipher.doFinal(enc)
+      }
+    }
+  }
+
+  @Test
+  fun `ssh key manager generates Ed25519 identity loadable by JSch and enforces TOFU`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val keyManager = com.example.ssh.SshKeyManager(context, inMemoryAesCipher())
+
+    val pubKey = keyManager.regenerateIdentity()
+    assertTrue(pubKey.startsWith("ssh-ed25519 "))
+    assertTrue(keyManager.getPublicKeyFingerprintSha256().startsWith("SHA256:"))
+
+    // Verify JSch parses our BouncyCastle OpenSSH Ed25519 private key without errors
+    val privBytes = keyManager.loadPrivateKeyBytesForSsh()
+    try {
+      val privText = String(privBytes, Charsets.UTF_8)
+      assertTrue(privText.contains("BEGIN OPENSSH PRIVATE KEY"))
+      assertFalse(pubKey.contains("PRIVATE KEY"))
+
+      val jsch = com.jcraft.jsch.JSch()
+      jsch.addIdentity("test-ed25519", privBytes, null, null)
+      assertTrue(jsch.identityNames.contains("test-ed25519"))
+    } finally {
+      privBytes.fill(0)
+    }
+
+    // TOFU host key workflow
+    keyManager.clearTrustedHostKey("127.0.0.1", 8022)
+    val hostKey1 = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
+    val hostKey2 = byteArrayOf(9, 8, 7, 6, 5, 4, 3, 2)
+
+    val first = keyManager.verifyOrTrustHostKey("127.0.0.1", 8022, "ssh-ed25519", hostKey1)
+    assertTrue(first is com.example.ssh.HostKeyCheckResult.TrustedFirstUse)
+
+    val matched = keyManager.verifyOrTrustHostKey("127.0.0.1", 8022, "ssh-ed25519", hostKey1)
+    assertTrue(matched is com.example.ssh.HostKeyCheckResult.Matched)
+
+    val mismatch = keyManager.verifyOrTrustHostKey("127.0.0.1", 8022, "ssh-ed25519", hostKey2)
+    assertTrue(mismatch is com.example.ssh.HostKeyCheckResult.Mismatch)
+
+    keyManager.acceptChangedHostKey("127.0.0.1", 8022, "ssh-ed25519", hostKey2)
+    val matchedAfterAccept = keyManager.verifyOrTrustHostKey("127.0.0.1", 8022, "ssh-ed25519", hostKey2)
+    assertTrue(matchedAfterAccept is com.example.ssh.HostKeyCheckResult.Matched)
+  }
+
+  @Test
+  fun `setup command generator is idempotent, secret-free, and configures sshd safely`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val keyManager = com.example.ssh.SshKeyManager(context, inMemoryAesCipher())
+    val pubKey = keyManager.getOrCreatePublicKey()
+
+    val cmd = com.example.ssh.TermuxSetupHelper.buildSetupCommand(pubKey, sshPort = 8022)
+    assertTrue(cmd.contains("ListenAddress 127.0.0.1"))
+    assertTrue(cmd.contains("PasswordAuthentication no"))
+    assertTrue(cmd.contains("PubkeyAuthentication yes"))
+    assertTrue(cmd.contains("Port 8022"))
+    assertTrue(cmd.contains("chmod 700 ~/.ssh"))
+    assertTrue(cmd.contains("chmod 600 ~/.ssh/authorized_keys"))
+    assertFalse(cmd.contains("PRIVATE KEY"))
+
+    // Execute generated command twice against a temp HOME + PREFIX with stubbed binaries to prove real shell idempotency
+    val tempRoot = java.nio.file.Files.createTempDirectory("termux_setup_test").toFile()
+    try {
+      val fakeHome = java.io.File(tempRoot, "home").apply { mkdirs() }
+      val fakePrefix = java.io.File(tempRoot, "usr").apply { mkdirs() }
+      val fakeBin = java.io.File(tempRoot, "bin").apply { mkdirs() }
+      val sshEtcDir = java.io.File(fakePrefix, "etc/ssh").apply { mkdirs() }
+      val sshdCfg = java.io.File(sshEtcDir, "sshd_config")
+      sshdCfg.writeText("#Default config\n#Port 8022\nPasswordAuthentication yes\nListenAddress 0.0.0.0\n")
+
+      for (tool in listOf("sshd", "ssh-keygen", "pkill", "pkg")) {
+        val f = java.io.File(fakeBin, tool)
+        f.writeText("#!/bin/sh\nexit 0\n")
+        f.setExecutable(true)
+      }
+
+      repeat(2) {
+        val pb = ProcessBuilder("/bin/sh", "-c", cmd)
+        pb.environment()["HOME"] = fakeHome.absolutePath
+        pb.environment()["PREFIX"] = fakePrefix.absolutePath
+        pb.environment()["PATH"] = "${fakeBin.absolutePath}:/bin:/usr/bin"
+        pb.redirectErrorStream(true)
+        val proc = pb.start()
+        val out = proc.inputStream.bufferedReader().readText()
+        val code = proc.waitFor()
+        assertEquals("El script falló: $out", 0, code)
+      }
+
+      val authKeys = java.io.File(fakeHome, ".ssh/authorized_keys")
+      assertTrue(authKeys.exists())
+      assertEquals(1, authKeys.readLines().filter { it.isNotBlank() }.size)
+      assertEquals(pubKey.trim(), authKeys.readLines().first().trim())
+
+      val cfgLines = sshdCfg.readLines()
+      assertEquals(1, cfgLines.count { it == "Port 8022" })
+      assertEquals(1, cfgLines.count { it == "ListenAddress 127.0.0.1" })
+      assertEquals(1, cfgLines.count { it == "PasswordAuthentication no" })
+      assertEquals(1, cfgLines.count { it == "PubkeyAuthentication yes" })
+      assertFalse(cfgLines.any { it.contains("0.0.0.0") })
+    } finally {
+      tempRoot.deleteRecursively()
+    }
+  }
+
+  @Test(expected = IllegalArgumentException::class)
+  fun `setup command generator rejects privileged or invalid port`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val keyManager = com.example.ssh.SshKeyManager(context, inMemoryAesCipher())
+    com.example.ssh.TermuxSetupHelper.buildSetupCommand(keyManager.getOrCreatePublicKey(), sshPort = 22)
+  }
+
+  @Test(expected = IllegalArgumentException::class)
+  fun `setup command generator rejects injection payload as public key`() {
+    com.example.ssh.TermuxSetupHelper.buildSetupCommand("ssh-ed25519 AAAA; rm -rf /", sshPort = 8022)
+  }
+
+  @Test
+  fun `termux ssh client diagnoses every ssh connection error accurately`() = kotlinx.coroutines.test.runTest {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val keyManager = com.example.ssh.SshKeyManager(context, inMemoryAesCipher())
+    keyManager.getOrCreatePublicKey()
+
+    // 1. Termux not installed
+    val clientNoTermux = com.example.ssh.TermuxSshClient(
+        context = context,
+        keyManager = keyManager,
+        isTermuxInstalledProvider = { false }
+    )
+    val resNoTermux = clientNoTermux.testConnection(port = 8022)
+    assertTrue(resNoTermux is com.example.ssh.SshDiagnosticResult.Failure)
+    assertTrue((resNoTermux as com.example.ssh.SshDiagnosticResult.Failure).error is com.example.ssh.SshConnectionError.TermuxNotInstalled)
+
+    // 2. Invalid port
+    val clientInstalled = com.example.ssh.TermuxSshClient(
+        context = context,
+        keyManager = keyManager,
+        isTermuxInstalledProvider = { true }
+    )
+    val resInvalidPort = clientInstalled.testConnection(port = 22)
+    assertTrue((resInvalidPort as com.example.ssh.SshDiagnosticResult.Failure).error is com.example.ssh.SshConnectionError.InvalidPort)
+
+    // 3. Real connection refused on unused localhost ephemeral port -> SshdNotRunning
+    val unusedPort = java.net.ServerSocket(0).use { it.localPort }
+    val resRefused = clientInstalled.testConnection(port = unusedPort)
+    assertTrue(resRefused is com.example.ssh.SshDiagnosticResult.Failure)
+    assertTrue((resRefused as com.example.ssh.SshDiagnosticResult.Failure).error is com.example.ssh.SshConnectionError.SshdNotRunning)
+
+    // 4. KeyNotAuthorized classification
+    val authErr = com.example.ssh.TermuxSshClient.classifySshException(
+        com.jcraft.jsch.JSchException("Auth fail for methods 'publickey'")
+    )
+    assertTrue(authErr is com.example.ssh.SshConnectionError.KeyNotAuthorized)
+    assertTrue(authErr.toUserMessage().contains("authorized_keys"))
+
+    // 5. WrongPortOrTimeout classification
+    val timeoutErr = com.example.ssh.TermuxSshClient.classifySshException(
+        java.net.SocketTimeoutException("connect timed out"),
+        port = 9999
+    )
+    assertTrue(timeoutErr is com.example.ssh.SshConnectionError.WrongPortOrTimeout)
+    assertTrue(timeoutErr.toUserMessage().contains("9999"))
+
+    // 6. HostKeyChanged message includes expected and actual fingerprints
+    val hkErr = com.example.ssh.SshConnectionError.HostKeyChanged(
+        host = "127.0.0.1",
+        port = 8022,
+        expectedFingerprint = "SHA256:OLD",
+        actualFingerprint = "SHA256:NEW",
+        algorithm = "ssh-ed25519",
+        hostKeyBytes = byteArrayOf(1, 2, 3)
+    )
+    assertTrue(hkErr.toUserMessage().contains("SHA256:OLD"))
+    assertTrue(hkErr.toUserMessage().contains("SHA256:NEW"))
+  }
+
+  @Test
+  fun `preferences persists termux ssh port, user, mode and web flag`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val prefs = TerminalPreferences(context)
+
+    prefs.setTermuxSshPort(2222)
+    prefs.setTermuxSshUser("u0_a314")
+    prefs.setPracticeModePreferred(false)
+    prefs.setWebServerEnabled(true)
+
+    assertEquals(2222, prefs.getTermuxSshPort())
+    assertEquals("u0_a314", prefs.getTermuxSshUser())
+    assertFalse(prefs.isPracticeModePreferred())
+    assertTrue(prefs.isWebServerEnabled())
+  }
 }

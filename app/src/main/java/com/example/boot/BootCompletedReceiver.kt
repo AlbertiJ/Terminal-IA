@@ -182,7 +182,7 @@ class BootCompletedReceiver : BroadcastReceiver() {
         val detail = buildString {
             append("Scripts ejecutados: ${report.executedCount}")
             if (report.blockedCount > 0) append(" | Bloqueados: ${report.blockedCount}")
-            if (autoStartServers) append(" • Toca para activar servidores :8022/:8080")
+            if (autoStartServers) append(" • Toca para iniciar Terminal Web :8080")
         }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)

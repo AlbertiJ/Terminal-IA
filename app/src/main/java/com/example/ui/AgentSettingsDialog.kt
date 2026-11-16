@@ -600,13 +600,13 @@ fun AgentSettingsDialog(
                         ) {
                             Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                                 Text(
-                                    text = "Auto-iniciar SSH (:8022) y Web (:8080)",
+                                    text = "Auto-iniciar Terminal Web (:8080)",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 12.sp,
                                     color = selectedTheme.primaryText
                                 )
                                 Text(
-                                    text = "Inicia consola remota y Terminal Web automáticamente al abrir la app.",
+                                    text = "Inicia la consola web al abrir la app (el SSH local lo provee Termux).",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 10.sp,
                                     color = selectedTheme.primaryText.copy(alpha = 0.65f)

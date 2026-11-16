@@ -11,28 +11,54 @@ import androidx.lifecycle.viewModelScope
 import com.example.agent.ClaudeAgentService
 import com.example.agent.OpenClawAgentService
 import com.example.boot.BootCompletedReceiver
+import com.example.controller.TerminalController
+import com.example.controller.TerminalLogLevel
 import com.example.data.TerminalPreferences
-import com.example.fs.VirtualFileSystem
+import com.example.data.db.CommandHistoryRepository
+import com.example.data.db.TermuxDatabase
 import com.example.engine.TerminalEngine
+import com.example.fs.VirtualFileSystem
 import com.example.model.AgentSettings
 import com.example.model.LineType
 import com.example.model.SessionType
 import com.example.model.TerminalLine
 import com.example.model.TerminalSession
-import com.example.server.RemoteConsoleServer
-import com.example.server.WebTerminalServer
-import com.example.controller.TerminalController
-import com.example.controller.TerminalLogLevel
-import com.example.data.db.CommandHistoryRepository
-import com.example.data.db.TermuxDatabase
 import com.example.script.ScriptManager
+import com.example.server.WebTerminalServer
+import com.example.ssh.ActiveSshShellSession
+import com.example.ssh.SshConnectionError
+import com.example.ssh.SshDiagnosticException
+import com.example.ssh.SshDiagnosticResult
+import com.example.ssh.SshKeyManager
+import com.example.ssh.TermuxSetupHelper
+import com.example.ssh.TermuxSshClient
+import com.example.ui.RealSshConnectionState
+import com.example.ui.RealTerminalByteSink
+import com.example.util.NetworkUtils
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+enum class AppTerminalMode {
+    REAL_TERMUX,
+    PRACTICE_SIMULATED
+}
+
 data class TerminalUiState(
+    val terminalMode: AppTerminalMode = AppTerminalMode.REAL_TERMUX,
+    val isTermuxInstalled: Boolean = false,
+    val termuxSshPort: Int = TermuxSetupHelper.DEFAULT_SSH_PORT,
+    val termuxSshUsername: String = "termux",
+    val sshPublicKeyFingerprint: String = "",
+    val setupCommandCopied: Boolean = false,
+    val showSetupWizard: Boolean = false,
+    val isTestingSshConnection: Boolean = false,
+    val sshDiagnosticResult: SshDiagnosticResult? = null,
+    val realSshConnectionState: RealSshConnectionState = RealSshConnectionState.Disconnected,
+    val pendingHostKeyMismatch: SshConnectionError.HostKeyChanged? = null,
     val sessions: List<TerminalSession> = emptyList(),
     val activeSessionId: String = "",
     val sessionLines: Map<String, List<TerminalLine>> = emptyMap(),
@@ -44,8 +70,6 @@ data class TerminalUiState(
     val showRemoteAccessDialog: Boolean = false,
     val showFileManagerDialog: Boolean = false,
     val isSplitScreenMode: Boolean = false,
-    val isRemoteServerRunning: Boolean = false,
-    val remoteServerPort: Int = 8022,
     val isWebTerminalRunning: Boolean = false,
     val webTerminalPort: Int = 8080,
     val deviceIps: List<String> = emptyList(),
@@ -74,9 +98,15 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     val scriptManager: ScriptManager get() = engine.scriptManager
     val terminalController = TerminalController(vfs)
 
-    private lateinit var remoteServer: RemoteConsoleServer
+    private val sshKeyManager = SshKeyManager(application)
+    private val termuxSshClient = TermuxSshClient(application, sshKeyManager)
+
     private lateinit var webServer: WebTerminalServer
     private lateinit var engine: TerminalEngine
+
+    private var activeShellSession: ActiveSshShellSession? = null
+    private var realByteSink: RealTerminalByteSink? = null
+    private val sinkLock = Any()
 
     private val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         val vibratorManager = application.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
@@ -100,27 +130,11 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             openClawService = openClawService,
             preferences = preferences,
             historyRepository = historyRepository,
-            onServerAction = { action, port ->
+            onServerAction = { action, _ ->
                 when (action) {
-                    "start" -> {
-                        startRemoteServer(port)
-                        startWebTerminal(8080)
-                    }
-                    "stop" -> {
-                        stopRemoteServer()
-                        stopWebTerminal()
-                    }
+                    "start" -> startWebTerminal(8080)
+                    "stop" -> stopWebTerminal()
                 }
-            }
-        )
-
-        remoteServer = RemoteConsoleServer(
-            context = application,
-            preferences = preferences,
-            engine = engine,
-            onLogMessage = { text, lineType ->
-                val activeId = _uiState.value.activeSessionId
-                appendLine(activeId, TerminalLine(text = text, type = lineType))
             }
         )
 
@@ -148,7 +162,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         }
 
         val mainSession = TerminalSession(
-            title = "1: bash",
+            title = "1: práctica",
             type = SessionType.SHELL,
             currentDirectory = "/home/user"
         )
@@ -195,11 +209,20 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             )
         )
 
-        val ips = remoteServer.getDeviceIpAddresses()
-        val port = preferences.getRemotePort()
-        val shouldStartServers = preferences.isRemoteServerEnabled() || loadedSettings.autoStartRemoteServersOnBoot
+        val ips = NetworkUtils.getDeviceIpAddresses()
+        val shouldStartWeb = preferences.isWebServerEnabled() || loadedSettings.autoStartRemoteServersOnBoot
+        val termuxInstalled = TermuxSetupHelper.isTermuxInstalled(application)
+        val savedSshPort = preferences.getTermuxSshPort()
+        val savedSshUser = preferences.getTermuxSshUser()
+        val practicePreferred = preferences.isPracticeModePreferred()
+        val initialMode = if (practicePreferred) AppTerminalMode.PRACTICE_SIMULATED else AppTerminalMode.REAL_TERMUX
 
         _uiState.value = TerminalUiState(
+            terminalMode = initialMode,
+            isTermuxInstalled = termuxInstalled,
+            termuxSshPort = savedSshPort,
+            termuxSshUsername = savedSshUser,
+            showSetupWizard = !practicePreferred && !termuxInstalled,
             sessions = listOf(mainSession, claudeSession, openClawSession),
             activeSessionId = mainSession.id,
             sessionLines = mapOf(
@@ -208,20 +231,268 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                 openClawSession.id to openClawIntro
             ),
             settings = loadedSettings,
-            isRemoteServerRunning = shouldStartServers,
-            remoteServerPort = port,
-            isWebTerminalRunning = shouldStartServers,
+            isWebTerminalRunning = shouldStartWeb,
             webTerminalPort = 8080,
             deviceIps = ips,
             hasRemoteCredentials = preferences.hasRemoteCredentials(),
             remoteUsername = preferences.getRemoteUsername()
         )
 
-        if (shouldStartServers) {
-            remoteServer.start(port)
+        // Generate/load non-exportable Ed25519 identity off the main thread
+        viewModelScope.launch(Dispatchers.IO) {
+            val fp = runCatching { sshKeyManager.getPublicKeyFingerprintSha256() }.getOrDefault("")
+            _uiState.update { it.copy(sshPublicKeyFingerprint = fp) }
+        }
+
+        if (shouldStartWeb) {
             webServer.start(8080)
         }
     }
+
+    // --- MODE & TERMUX REAL SSH TERMINAL ---
+
+    fun setTerminalMode(mode: AppTerminalMode) {
+        vibrateKey()
+        preferences.setPracticeModePreferred(mode == AppTerminalMode.PRACTICE_SIMULATED)
+        _uiState.update {
+            it.copy(
+                terminalMode = mode,
+                isTermuxInstalled = TermuxSetupHelper.isTermuxInstalled(getApplication())
+            )
+        }
+    }
+
+    fun openSetupWizard() {
+        vibrateKey()
+        refreshTermuxInstallStatus()
+        _uiState.update { it.copy(showSetupWizard = true) }
+    }
+
+    fun closeSetupWizard() {
+        _uiState.update { it.copy(showSetupWizard = false) }
+    }
+
+    fun refreshTermuxInstallStatus() {
+        val installed = TermuxSetupHelper.isTermuxInstalled(getApplication())
+        _uiState.update { it.copy(isTermuxInstalled = installed) }
+    }
+
+    fun openTermuxDownloadPage() {
+        vibrateKey()
+        TermuxSetupHelper.openTermuxDownloadPage(getApplication())
+    }
+
+    fun launchTermuxApp() {
+        vibrateKey()
+        TermuxSetupHelper.launchTermuxApp(getApplication())
+    }
+
+    fun updateTermuxPortAndUser(port: Int, username: String) {
+        if (port in 1024..65535) {
+            preferences.setTermuxSshPort(port)
+        }
+        val cleanUser = username.trim().ifBlank { "termux" }
+        preferences.setTermuxSshUser(cleanUser)
+        _uiState.update {
+            it.copy(
+                termuxSshPort = if (port in 1024..65535) port else it.termuxSshPort,
+                termuxSshUsername = cleanUser
+            )
+        }
+    }
+
+    fun buildAndTrackSetupCommand(port: Int): String {
+        vibrateKey()
+        val validPort = if (port in 1024..65535) port else _uiState.value.termuxSshPort
+        preferences.setTermuxSshPort(validPort)
+        val pubKey = sshKeyManager.getOrCreatePublicKey()
+        val fp = sshKeyManager.getPublicKeyFingerprintSha256()
+        val cmd = TermuxSetupHelper.buildSetupCommand(pubKey, validPort)
+        _uiState.update {
+            it.copy(
+                termuxSshPort = validPort,
+                sshPublicKeyFingerprint = fp,
+                setupCommandCopied = true
+            )
+        }
+        terminalController.log(
+            level = TerminalLogLevel.INFO,
+            tag = "TERMUX_WIZARD",
+            message = "Comando de configuración generado para 127.0.0.1:$validPort (solo clave pública $fp)"
+        )
+        return cmd
+    }
+
+    fun testTermuxConnection(port: Int = _uiState.value.termuxSshPort, username: String = _uiState.value.termuxSshUsername) {
+        vibrateKey()
+        refreshTermuxInstallStatus()
+        updateTermuxPortAndUser(port, username)
+        _uiState.update {
+            it.copy(
+                isTestingSshConnection = true,
+                sshDiagnosticResult = null,
+                pendingHostKeyMismatch = null
+            )
+        }
+        viewModelScope.launch {
+            val result = termuxSshClient.testConnection(port = port, username = username)
+            val mismatch = (result as? SshDiagnosticResult.Failure)?.error as? SshConnectionError.HostKeyChanged
+            _uiState.update {
+                it.copy(
+                    isTestingSshConnection = false,
+                    sshDiagnosticResult = result,
+                    pendingHostKeyMismatch = mismatch,
+                    isTermuxInstalled = TermuxSetupHelper.isTermuxInstalled(getApplication())
+                )
+            }
+            when (result) {
+                is SshDiagnosticResult.Success -> terminalController.log(
+                    level = TerminalLogLevel.INFO,
+                    tag = "SSH_TEST",
+                    message = "Handshake SSH OK con ${result.host}:${result.port} (${result.hostFingerprintSha256})"
+                )
+                is SshDiagnosticResult.Failure -> terminalController.log(
+                    level = TerminalLogLevel.WARNING,
+                    tag = "SSH_TEST",
+                    message = result.error.toUserMessage()
+                )
+            }
+        }
+    }
+
+    fun registerRealByteSink(sink: RealTerminalByteSink?) {
+        synchronized(sinkLock) {
+            realByteSink = sink
+        }
+    }
+
+    fun connectRealTerminal(cols: Int = 80, rows: Int = 24) {
+        vibrateKey()
+        disconnectRealTerminal(silent = true)
+        val state = _uiState.value
+        val port = state.termuxSshPort
+        val user = state.termuxSshUsername
+
+        _uiState.update {
+            it.copy(
+                terminalMode = AppTerminalMode.REAL_TERMUX,
+                showSetupWizard = false,
+                realSshConnectionState = RealSshConnectionState.Connecting,
+                pendingHostKeyMismatch = null
+            )
+        }
+
+        viewModelScope.launch {
+            val res = termuxSshClient.openShellSession(
+                port = port,
+                username = user,
+                initialCols = cols,
+                initialRows = rows,
+                onOutputBytes = { bytes, len ->
+                    synchronized(sinkLock) {
+                        realByteSink?.onBytesReceived(bytes, len)
+                    }
+                },
+                onSessionClosed = { reason ->
+                    activeShellSession = null
+                    _uiState.update { current ->
+                        if (current.realSshConnectionState is RealSshConnectionState.Connected) {
+                            current.copy(
+                                realSshConnectionState = if (reason.isNullOrBlank()) {
+                                    RealSshConnectionState.Disconnected
+                                } else {
+                                    RealSshConnectionState.Error(SshConnectionError.OtherError("Sesión cerrada: $reason"))
+                                }
+                            )
+                        } else {
+                            current
+                        }
+                    }
+                }
+            )
+
+            res.onSuccess { session ->
+                activeShellSession = session
+                _uiState.update {
+                    it.copy(
+                        realSshConnectionState = RealSshConnectionState.Connected(
+                            host = TermuxSshClient.LOCALHOST,
+                            port = port,
+                            hostFingerprint = session.hostFingerprintSha256
+                        ),
+                        sshDiagnosticResult = SshDiagnosticResult.Success(
+                            host = TermuxSshClient.LOCALHOST,
+                            port = port,
+                            hostFingerprintSha256 = session.hostFingerprintSha256,
+                            hostAlgorithm = sshKeyManager.getTrustedHostAlgorithm(TermuxSshClient.LOCALHOST, port) ?: "ssh-ed25519",
+                            clientKeyFingerprintSha256 = it.sshPublicKeyFingerprint,
+                            firstTimeTrusted = session.firstTimeTrusted
+                        )
+                    )
+                }
+                terminalController.log(
+                    level = TerminalLogLevel.INFO,
+                    tag = "SSH_SHELL",
+                    message = "Sesión Shell PTY activa en 127.0.0.1:$port"
+                )
+            }.onFailure { throwable ->
+                val sshError = (throwable as? SshDiagnosticException)?.connectionError
+                    ?: SshConnectionError.OtherError(throwable.message ?: "Error desconocido")
+                val mismatch = sshError as? SshConnectionError.HostKeyChanged
+                _uiState.update {
+                    it.copy(
+                        realSshConnectionState = RealSshConnectionState.Error(sshError),
+                        pendingHostKeyMismatch = mismatch
+                    )
+                }
+                terminalController.log(
+                    level = TerminalLogLevel.ERROR,
+                    tag = "SSH_SHELL",
+                    message = sshError.toUserMessage()
+                )
+            }
+        }
+    }
+
+    fun disconnectRealTerminal(silent: Boolean = false) {
+        if (!silent) vibrateKey()
+        val prev = activeShellSession
+        activeShellSession = null
+        prev?.disconnect()
+        _uiState.update { it.copy(realSshConnectionState = RealSshConnectionState.Disconnected) }
+    }
+
+    fun sendRealKeyboardBytes(bytes: ByteArray) {
+        activeShellSession?.sendBytes(bytes)
+    }
+
+    fun resizeRealTerminal(cols: Int, rows: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            activeShellSession?.resizePty(cols, rows)
+        }
+    }
+
+    fun acceptChangedHostKey(mismatch: SshConnectionError.HostKeyChanged, reconnectAfter: Boolean = false) {
+        vibrateKey()
+        sshKeyManager.acceptChangedHostKey(
+            host = mismatch.host,
+            port = mismatch.port,
+            algorithm = mismatch.algorithm,
+            hostKeyBytes = mismatch.hostKeyBytes
+        )
+        _uiState.update { it.copy(pendingHostKeyMismatch = null, sshDiagnosticResult = null) }
+        if (reconnectAfter) {
+            connectRealTerminal()
+        } else {
+            testTermuxConnection(mismatch.port, _uiState.value.termuxSshUsername)
+        }
+    }
+
+    fun dismissHostKeyMismatch() {
+        _uiState.update { it.copy(pendingHostKeyMismatch = null) }
+    }
+
+    // --- PRACTICE MODE (ISOLATED SIMULATED ENGINE) ---
 
     fun onInputChange(newInput: String) {
         val sessionId = _uiState.value.activeSessionId
@@ -258,13 +529,18 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         vibrateKey()
         val count = _uiState.value.sessions.size + 1
         val name = when (type) {
-            SessionType.SHELL -> "$count: bash"
+            SessionType.SHELL -> "$count: práctica"
             SessionType.CLAUDE -> "$count: claude"
             SessionType.OPENCLAW -> "$count: openclaw"
         }
         val newSession = TerminalSession(title = name, type = type)
         val introLines = when (type) {
-            SessionType.SHELL -> listOf(TerminalLine(text = "Nueva sesión de shell creada.", type = LineType.SYSTEM))
+            SessionType.SHELL -> listOf(
+                TerminalLine(
+                    text = "[MODO PRÁCTICA] Nueva sesión de shell simulada creada.",
+                    type = LineType.SYSTEM
+                )
+            )
             SessionType.CLAUDE -> listOf(TerminalLine(text = "Sesión Claude lista.", type = LineType.AGENT_CLAUDE, agentName = "Claude"))
             SessionType.OPENCLAW -> listOf(TerminalLine(text = "Sesión OpenClaw lista.", type = LineType.AGENT_OPENCLAW, agentName = "OpenClaw"))
         }
@@ -312,7 +588,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
         terminalController.log(
             level = TerminalLogLevel.COMMAND,
-            tag = "EXEC",
+            tag = "PRACTICE_EXEC",
             message = "$trimmedCmd (dir: ${session.currentDirectory})",
             sessionId = sessionId
         )
@@ -326,7 +602,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             commandHistory = historyRepository.getNavigationHistory()
         }
 
-        val promptHeader = "${preferences.getRemoteUsername()}@termux:${session.currentDirectory}$ $rawInput"
+        val promptHeader = "practica@sandbox:${session.currentDirectory}$ $rawInput"
         appendLine(sessionId, TerminalLine(text = promptHeader, type = LineType.COMMAND))
         _uiState.update { it.copy(input = "", isExecuting = true) }
 
@@ -365,6 +641,27 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     fun onExtraKeyPressed(key: String) {
         vibrateKey()
+        if (_uiState.value.terminalMode == AppTerminalMode.REAL_TERMUX) {
+            when (key) {
+                "ESC" -> sendRealKeyboardBytes(byteArrayOf(0x1B))
+                "TAB" -> sendRealKeyboardBytes("\t".toByteArray())
+                "CTRL" -> sendRealKeyboardBytes(byteArrayOf(0x03)) // Ctrl+C
+                "ALT" -> sendRealKeyboardBytes(byteArrayOf(0x1B))
+                "↑" -> sendRealKeyboardBytes("\u001b[A".toByteArray())
+                "↓" -> sendRealKeyboardBytes("\u001b[B".toByteArray())
+                "|", "/", "-", "~", "\"", "$" -> sendRealKeyboardBytes(key.toByteArray())
+                "clear" -> sendRealKeyboardBytes("clear\n".toByteArray())
+                "history" -> sendRealKeyboardBytes("history\n".toByteArray())
+                "ip" -> sendRealKeyboardBytes("ip addr || ifconfig\n".toByteArray())
+                "neofetch" -> sendRealKeyboardBytes("uname -a\n".toByteArray())
+                "ssh" -> openSetupWizard()
+                "scripts" -> openScriptManager()
+                "logs" -> openLogsDialog()
+                else -> {}
+            }
+            return
+        }
+
         when (key) {
             "TAB" -> handleTabCompletion()
             "ESC" -> onInputChange("")
@@ -456,47 +753,24 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    // --- REMOTE SERVERS (SSH / TELNET & WEB TERMINAL) ---
-
-    fun startRemoteServer(port: Int = _uiState.value.remoteServerPort) {
-        remoteServer.start(port)
-        _uiState.update {
-            it.copy(
-                isRemoteServerRunning = true,
-                remoteServerPort = port,
-                deviceIps = remoteServer.getDeviceIpAddresses()
-            )
-        }
-    }
-
-    fun stopRemoteServer() {
-        remoteServer.stop()
-        _uiState.update { it.copy(isRemoteServerRunning = false) }
-    }
+    // --- WEB TERMINAL SERVER ---
 
     fun startWebTerminal(port: Int = 8080) {
         webServer.start(port)
+        preferences.setWebServerEnabled(true)
         _uiState.update {
             it.copy(
                 isWebTerminalRunning = true,
                 webTerminalPort = port,
-                deviceIps = remoteServer.getDeviceIpAddresses()
+                deviceIps = NetworkUtils.getDeviceIpAddresses()
             )
         }
     }
 
     fun stopWebTerminal() {
         webServer.stop()
+        preferences.setWebServerEnabled(false)
         _uiState.update { it.copy(isWebTerminalRunning = false) }
-    }
-
-    fun toggleRemoteServer(enabled: Boolean, port: Int) {
-        vibrateKey()
-        if (enabled) {
-            startRemoteServer(port)
-        } else {
-            stopRemoteServer()
-        }
     }
 
     fun toggleWebTerminal(enabled: Boolean, port: Int) {
@@ -546,7 +820,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     fun openRemoteAccessDialog() {
         vibrateKey()
-        val ips = remoteServer.getDeviceIpAddresses()
+        val ips = NetworkUtils.getDeviceIpAddresses()
         _uiState.update {
             it.copy(
                 showRemoteAccessDialog = true,
@@ -570,7 +844,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             )
         }
         val sessionId = _uiState.value.activeSessionId
-        appendLine(sessionId, TerminalLine(text = "[Credenciales remotas configuradas para '$username']", type = LineType.SYSTEM))
+        appendLine(sessionId, TerminalLine(text = "[Credenciales web configuradas para '$username']", type = LineType.SYSTEM))
     }
 
     // --- DIALOGS & ACTIONS ---
@@ -629,7 +903,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     override fun onCleared() {
         super.onCleared()
-        remoteServer.stop()
+        disconnectRealTerminal(silent = true)
         webServer.stop()
     }
 }

@@ -63,20 +63,16 @@ import com.example.model.TerminalThemePreset
 @Composable
 fun RemoteAccessDialog(
     theme: TerminalThemePreset,
-    isServerRunning: Boolean,
-    serverPort: Int,
     isWebRunning: Boolean,
     webPort: Int,
     deviceIps: List<String>,
     currentUsername: String,
     hasCredentials: Boolean,
-    onToggleServer: (Boolean, Int) -> Unit,
     onToggleWebServer: (Boolean, Int) -> Unit,
     onSaveCredentials: (String, String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val clipboard: ClipboardManager = LocalClipboardManager.current
-    var copiedIp by remember { mutableStateOf(false) }
     var copiedWeb by remember { mutableStateOf(false) }
 
     var showCredentialForm by remember { mutableStateOf(!hasCredentials) }
@@ -86,8 +82,7 @@ fun RemoteAccessDialog(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var successMessage by remember { mutableStateOf<String?>(null) }
 
-    val primaryIp = deviceIps.firstOrNull() ?: "192.168.1.X"
-    val sshCommand = "ssh $currentUsername@$primaryIp -p $serverPort"
+    val primaryIp = deviceIps.firstOrNull() ?: "127.0.0.1"
     val webUrl = "http://$primaryIp:$webPort/"
 
     Dialog(
@@ -240,105 +235,9 @@ fun RemoteAccessDialog(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // 2. SSH / TELNET SERVER SECTION
+                // 2. CREDENTIALS & PBKDF2 SECURITY
                 Text(
-                    text = "2. SERVIDOR SSH / TELNET (CLI):",
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = theme.promptPath
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-
-                Surface(
-                    color = theme.surface,
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(10.dp)
-                                            .clip(CircleShape)
-                                            .background(if (isServerRunning) Color(0xFF00E676) else Color(0xFFFF5252))
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = if (isServerRunning) "SSH ACTIVO (:$serverPort)" else "SSH DETENIDO",
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp,
-                                        color = if (isServerRunning) Color(0xFF00E676) else Color(0xFFFF5252)
-                                    )
-                                }
-                                Text(
-                                    text = "Conéctate por terminal desde PC, Mac o Linux",
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 10.sp,
-                                    color = theme.primaryText.copy(alpha = 0.7f)
-                                )
-                            }
-
-                            Switch(
-                                checked = isServerRunning,
-                                onCheckedChange = { checked ->
-                                    onToggleServer(checked, serverPort)
-                                },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = theme.primaryText,
-                                    checkedTrackColor = Color(0xFF00E676).copy(alpha = 0.5f)
-                                )
-                            )
-                        }
-
-                        if (isServerRunning) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(theme.background)
-                                    .padding(8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = sshCommand,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    color = theme.accentText
-                                )
-                                IconButton(
-                                    onClick = {
-                                        clipboard.setText(AnnotatedString(sshCommand))
-                                        copiedIp = true
-                                    },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = if (copiedIp) Icons.Default.Check else Icons.Default.ContentCopy,
-                                        contentDescription = "Copiar SSH",
-                                        tint = if (copiedIp) Color(0xFF00E676) else theme.primaryText,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // 3. CREDENTIALS & PBKDF2 SECURITY
-                Text(
-                    text = "3. CREDENCIALES DE ACCESO REMOTO:",
+                    text = "2. CREDENCIALES DE ACCESO WEB:",
                     fontFamily = FontFamily.Monospace,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,

@@ -26,11 +26,15 @@ class TerminalPreferences(context: Context) {
         private const val KEY_RUN_BOOT_SCRIPTS = "run_boot_scripts_on_boot"
         private const val KEY_HISTORY = "command_history"
 
-        // Remote SSH / Telnet Server Credentials
+        // Web Terminal Credentials (Fase 2 hardening)
         private const val KEY_REMOTE_USER = "remote_user"
         private const val KEY_REMOTE_PASS_HASH = "remote_pass_hash"
-        private const val KEY_REMOTE_PORT = "remote_port"
-        private const val KEY_REMOTE_ENABLED = "remote_enabled"
+        private const val KEY_WEB_ENABLED = "web_terminal_enabled"
+
+        // Termux Real SSH Connection Settings (Fase 1)
+        private const val KEY_TERMUX_SSH_PORT = "termux_ssh_port"
+        private const val KEY_TERMUX_SSH_USER = "termux_ssh_user"
+        private const val KEY_TERMINAL_MODE = "terminal_app_mode"
     }
 
     fun getSecurityManager(): SecurityManager = securityManager
@@ -115,16 +119,31 @@ class TerminalPreferences(context: Context) {
         return securityManager.verifyPassword(plainPassword, storedHash)
     }
 
-    fun getRemotePort(): Int = prefs.getInt(KEY_REMOTE_PORT, 8022)
+    fun getTermuxSshPort(): Int = prefs.getInt(KEY_TERMUX_SSH_PORT, 8022)
 
-    fun setRemotePort(port: Int) {
-        prefs.edit().putInt(KEY_REMOTE_PORT, port).apply()
+    fun setTermuxSshPort(port: Int) {
+        if (port in 1024..65535) {
+            prefs.edit().putInt(KEY_TERMUX_SSH_PORT, port).apply()
+        }
     }
 
-    fun isRemoteServerEnabled(): Boolean = prefs.getBoolean(KEY_REMOTE_ENABLED, false)
+    fun getTermuxSshUser(): String = prefs.getString(KEY_TERMUX_SSH_USER, "termux") ?: "termux"
 
-    fun setRemoteServerEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_REMOTE_ENABLED, enabled).apply()
+    fun setTermuxSshUser(user: String) {
+        prefs.edit().putString(KEY_TERMUX_SSH_USER, user.trim().ifBlank { "termux" }).apply()
+    }
+
+    fun isPracticeModePreferred(): Boolean =
+        prefs.getString(KEY_TERMINAL_MODE, "REAL") == "PRACTICE"
+
+    fun setPracticeModePreferred(practice: Boolean) {
+        prefs.edit().putString(KEY_TERMINAL_MODE, if (practice) "PRACTICE" else "REAL").apply()
+    }
+
+    fun isWebServerEnabled(): Boolean = prefs.getBoolean(KEY_WEB_ENABLED, false)
+
+    fun setWebServerEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_WEB_ENABLED, enabled).apply()
     }
 
     // --- COMMAND HISTORY ---

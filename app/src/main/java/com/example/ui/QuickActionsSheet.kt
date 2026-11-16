@@ -62,16 +62,10 @@ fun QuickActionsDialog(
 ) {
     val actions = listOf(
         QuickActionItem(
-            title = "Ver IP y Conexión Remota (SSH)",
-            description = "Muestra la IP local de tu celular y guía de conexión",
+            title = "Ver IP de Interfaces de Red",
+            description = "Muestra las interfaces activas del dispositivo",
             command = "ip",
             icon = Icons.Default.Lan
-        ),
-        QuickActionItem(
-            title = "Iniciar Servidor SSH / Telnet",
-            description = "Arranca el socket de escucha en el puerto 8022",
-            command = "sshd start",
-            icon = Icons.Default.VpnKey
         ),
         QuickActionItem(
             title = "Neofetch Ficha de Sistema",

@@ -136,20 +136,6 @@ class TerminalController(
             CommandDescriptor("uname", "Muestra especificaciones del kernel y arquitectura", "uname [-a]", "Sistema", flags = listOf("-a")),
             CommandDescriptor("ip", "Detecta y muestra IPs de interfaces de red activas", "ip", "Red"),
             CommandDescriptor("ifconfig", "Alias para detección de interfaces de red", "ifconfig", "Red"),
-            CommandDescriptor(
-                name = "sshd",
-                description = "Controla el servidor de acceso remoto SSH seguro",
-                usage = "sshd [start|stop|status] [puerto]",
-                category = "Red",
-                subcommands = listOf("start", "stop", "status")
-            ),
-            CommandDescriptor(
-                name = "telnetd",
-                description = "Controla la consola remota Telnet",
-                usage = "telnetd [start|stop] [puerto]",
-                category = "Red",
-                subcommands = listOf("start", "stop")
-            ),
             CommandDescriptor("passwd", "Configura credenciales cifradas con PBKDF2 y salt", "passwd [clave]", "Seguridad"),
             CommandDescriptor(
                 name = "agent",

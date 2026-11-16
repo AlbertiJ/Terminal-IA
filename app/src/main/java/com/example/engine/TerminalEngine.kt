@@ -54,17 +54,13 @@ class TerminalEngine(
     fun getInitialWelcomeLines(): List<TerminalLine> {
         val welcome = """
             ================================================================
-             TERMUX AI - Android Console & Autonomous Agent Hub
+             TERMINAL-IA — MODO PRÁCTICA (SIMULADO)
             ================================================================
-             * Terminal Shell: Bash emulator with VFS sandbox (Sandboxed)
-             * Seguridad: Cifrado AES-256-GCM para APIs & Hash PBKDF2
-             * Conexión Remota: Servidor SSH / Telnet (puerto 8022)
-             * Agentes: Claude (Anthropic) & OpenClaw Autónomo
+             * AVISO: Estás en el Modo Práctica simulado (VFS en memoria/app).
+             * No ejecuta binarios Linux reales ni procesos del sistema.
+             * Para usar Linux y paquetes reales, cambia a "Modo Real (Termux)".
             ----------------------------------------------------------------
-             * Escribe 'ip' para ver la IP de tu celular y conectarte remoto.
-             * Escribe 'sshd start' para iniciar el acceso remoto seguro.
-             * Escribe 'passwd' para configurar tus credenciales de acceso.
-             * Escribe 'help' para la lista completa de comandos.
+             * Escribe 'help' para la lista de comandos de práctica.
             ================================================================
         """.trimIndent()
 
@@ -142,7 +138,7 @@ class TerminalEngine(
                 onOutputLine(TerminalLine(text = unameInfo, type = LineType.OUTPUT))
             }
             "ip", "ifconfig" -> showIpAddresses(onOutputLine)
-            "sshd", "telnetd" -> handleSshServerCommand(cmd, args, onOutputLine)
+            "sshd", "telnetd" -> handleSshServerCommand(cmd, onOutputLine)
             "passwd" -> handlePasswdCommand(args, onOutputLine)
             "agent" -> handleAgentApiCommand(args, settings, onOutputLine)
             "env" -> showMaskedEnv(onOutputLine)
@@ -268,84 +264,33 @@ class TerminalEngine(
             }
         } catch (_: Exception) {}
 
-        val port = preferences.getRemotePort()
-        val user = preferences.getRemoteUsername()
-        val credStatus = if (preferences.hasRemoteCredentials()) "Configurado (Hash PBKDF2 activo)" else "NO configurado (Usa 'passwd' para crear)"
-
         val text = buildString {
             append("================================================================\n")
-            append("           CONECTIVIDAD REMOTA DEL DISPOSITIVO (SSH/TELNET)\n")
+            append("           INTERFACES DE RED DEL DISPOSITIVO\n")
             append("================================================================\n")
             if (ips.isEmpty()) {
-                append("! No se detectó interfaz Wi-Fi/LAN activa. Conéctate a Wi-Fi o Hotspot.\n")
-                append("IP Local: 127.0.0.1 (localhost)\n")
+                append("! No se detectó interfaz Wi-Fi/LAN activa.\n")
+                append("Loopback local: 127.0.0.1\n")
             } else {
-                append("Interfaces de red activas detectadas:\n")
+                append("Interfaces activas detectadas:\n")
                 for ((iface, ip) in ips) {
                     append(" * $iface: $ip\n")
                 }
             }
-            append("\nPuerto de conexión: $port\n")
-            append("Usuario remoto: $user\n")
-            append("Estado de credenciales: $credStatus\n")
-            append("\nPara conectarte remotamente desde tu PC, Mac o terminal:\n")
-            val primaryIp = ips.firstOrNull()?.second ?: "192.168.X.X"
-            append("  ssh $user@$primaryIp -p $port\n")
-            append("  telnet $primaryIp $port\n")
             append("----------------------------------------------------------------\n")
-            append("Comandos de servidor:\n")
-            append("  sshd start       Inicia el servidor en el celular\n")
-            append("  sshd stop        Detiene el servidor\n")
-            append("  passwd [clave]   Crea o cambia tu contraseña de acceso\n")
+            append("Nota: La conexión SSH real con Termux usa 127.0.0.1:${preferences.getTermuxSshPort()}\n")
             append("================================================================")
         }
         onOutputLine(TerminalLine(text = text, type = LineType.OUTPUT))
     }
 
-    private fun handleSshServerCommand(cmdName: String, args: List<String>, onOutputLine: (TerminalLine) -> Unit) {
-        if (args.isEmpty()) {
-            val port = preferences.getRemotePort()
-            val state = if (preferences.isRemoteServerEnabled()) "ACTIVO (Escuchando en :$port)" else "DETENIDO"
-            onOutputLine(
-                TerminalLine(
-                    text = "$cmdName: Servidor está $state.\nUso: $cmdName [start|stop|status|restart] [puerto]",
-                    type = LineType.SYSTEM
-                )
+    private fun handleSshServerCommand(cmdName: String, onOutputLine: (TerminalLine) -> Unit) {
+        onOutputLine(
+            TerminalLine(
+                text = "$cmdName: El servidor falso de consola (:8022) fue eliminado para evitar conflicto con el sshd real de Termux.\nCambia a 'Modo Real (Termux)' y usa el asistente de 3 pasos.",
+                type = LineType.SYSTEM
             )
-            return
-        }
-
-        when (args[0].lowercase()) {
-            "start" -> {
-                val port = args.getOrNull(1)?.toIntOrNull() ?: preferences.getRemotePort()
-                if (!preferences.hasRemoteCredentials()) {
-                    onOutputLine(
-                        TerminalLine(
-                            text = "[AVISO DE SEGURIDAD] Aún no tienes usuario y clave configurados.\nEscribe: passwd <tu_clave> antes de iniciar el acceso remoto.",
-                            type = LineType.ERROR
-                        )
-                    )
-                }
-                onServerAction?.invoke("start", port)
-                onOutputLine(TerminalLine(text = "Iniciando servidor remoto en puerto $port...", type = LineType.SYSTEM))
-                showIpAddresses(onOutputLine)
-            }
-            "stop" -> {
-                onServerAction?.invoke("stop", 0)
-                onOutputLine(TerminalLine(text = "Servidor remoto detenido.", type = LineType.SYSTEM))
-            }
-            "status" -> {
-                val port = preferences.getRemotePort()
-                val isRunning = preferences.isRemoteServerEnabled()
-                onOutputLine(
-                    TerminalLine(
-                        text = "Estado del servidor remoto: ${if (isRunning) "ACTIVO en puerto $port" else "INACTIVO"}\nCredenciales configuradas: ${if (preferences.hasRemoteCredentials()) "SÍ (PBKDF2)" else "NO"}",
-                        type = LineType.SYSTEM
-                    )
-                )
-            }
-            else -> onOutputLine(TerminalLine(text = "$cmdName: subcomando desconocido '${args[0]}'", type = LineType.ERROR))
-        }
+        )
     }
 
     private fun handlePasswdCommand(args: List<String>, onOutputLine: (TerminalLine) -> Unit) {
@@ -543,44 +488,36 @@ class TerminalEngine(
     private fun showHelp(args: List<String>, onOutputLine: (TerminalLine) -> Unit) {
         val helpText = """
             ================================================================
-                       TERMUX AI COMMAND REFERENCE GUIDE
+                       TERMINAL-IA — MODO PRÁCTICA (SIMULADO)
             ================================================================
-            * CONEXIÓN REMOTA (SSH / TELNET):
-              ip / ifconfig         Muestra la IP del celular y comandos de acceso
-              sshd start [puerto]   Inicia servidor de acceso remoto seguro
-              sshd stop             Detiene el servidor remoto
-              passwd [clave]        Configura contraseña cifrada con PBKDF2
-              telnetd start [port]  Inicia socket telnet/consola remota
+            * CONECTIVIDAD Y RED:
+              ip / ifconfig         Lista interfaces de red reales del dispositivo
+              passwd [clave]        Configura contraseña cifrada para Terminal Web
 
             * AGENTE CLAUDE (Anthropic):
               claude "consulta"     Envía consulta directa al agente Claude
-              claude -i             Inicia sesión de chat interactiva
               claude config         Ver modelo configurado y API Key (enmascarada)
               cat script | claude "analiza"  Canalización vía pipe a Claude
 
-            * AGENTE OPENCLAW (Autónomo):
-              openclaw "objetivo"   Planifica y ejecuta herramientas autónomas
-              openclaw run syscheck Ejecuta auditoría y verificación de sistema
-              openclaw run audit    Escanea archivos, permisos y scripts en VFS
+            * AGENTE OPENCLAW:
+              openclaw "objetivo"   Flujo de pasos del agente
               agent api [claude|openclaw]  Llamadas API en formato JSON
 
-            * ARCHIVOS Y NAVEGACIÓN:
-              ls [-la] [dir]        Lista contenidos de carpeta
+            * ARCHIVOS Y NAVEGACIÓN (VFS SANDBOX):
+              ls [-la] [dir]        Lista contenidos de carpeta virtual
               cd <dir>              Cambia de directorio (~ para home)
-              pwd                   Muestra directorio actual
-              cat <archivo>         Lee contenido de archivo
+              pwd                   Muestra directorio virtual actual
+              cat <archivo>         Lee contenido de archivo virtual
               nano / edit <archivo> Abre el editor visual integrado
               touch <archivo>       Crea archivo vacío
               mkdir <carpeta>       Crea una nueva carpeta
-              rm [-r] <destino>     Elimina archivo o carpeta (protegido)
+              rm [-r] <destino>     Elimina archivo o carpeta en VFS
               echo "texto" > file   Redirige texto a archivo
 
-            * RED Y SISTEMA:
-              neofetch              Muestra ficha gráfica del sistema Android
-              curl <url>            Petición HTTP real y muestra respuesta
-              ping <host>           Prueba de latencia y conectividad
-              python <script.py>    Ejecutor de scripts en Python
-              bash / run <script>   Ejecuta script de terminal
+            * UTILIDADES:
+              neofetch              Ficha de hardware Android del dispositivo
+              curl <url>            Petición HTTP real vía OkHttp
+              ping <host>           Prueba de alcanzabilidad Java (InetAddress)
               clear                 Limpia la pantalla
             ================================================================
         """.trimIndent()
@@ -592,21 +529,20 @@ class TerminalEngine(
         val totalMemMb = runtime.totalMemory() / (1024 * 1024)
         val freeMemMb = runtime.freeMemory() / (1024 * 1024)
         val usedMemMb = totalMemMb - freeMemMb
-        val serverStatus = if (preferences.isRemoteServerEnabled()) "Listening :${preferences.getRemotePort()}" else "Stopped"
+        val webStatus = if (preferences.isWebServerEnabled()) "Web :8080 activa" else "Web detenida"
 
         val art = """
-             [36m      __             [0m  [1;32m${preferences.getRemoteUsername()}@termux-ai [0m
+             [36m      __             [0m  [1;32mModo Práctica (Simulado) [0m
              [36m     /  \            [0m  [37m-------------- [0m
              [36m    | () |           [0m  [1;36mOS: [0m Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})
              [36m   /      \          [0m  [1;36mHost: [0m ${Build.MANUFACTURER} ${Build.MODEL}
-             [36m  |   __   |         [0m  [1;36mKernel: [0m Linux 5.15.0-arm64
-             [36m  |  /  \  |         [0m  [1;36mSSH/Telnet: [0m $serverStatus
-             [36m   \/    \/          [0m  [1;36mSecurity: [0m PBKDF2 + AES-256-GCM
-             [36m   / >_   \          [0m  [1;36mTerminal: [0m Termux-AI v1.1
+             [36m  |   __   |         [0m  [1;36mKernel JVM: [0m ${System.getProperty("os.version") ?: "Android"}
+             [36m  |  /  \  |         [0m  [1;36mWeb Console: [0m $webStatus
+             [36m   \/    \/          [0m  [1;36mSSH Termux: [0m 127.0.0.1:${preferences.getTermuxSshPort()}
+             [36m   / >_   \          [0m  [1;36mApp: [0m Terminal-IA
              [36m  |  CLAW  |         [0m  [1;36mCPU: [0m ${Build.HARDWARE} (${Runtime.getRuntime().availableProcessors()} cores)
-             [36m   \______/          [0m  [1;36mMemory: [0m ${usedMemMb}MB / ${totalMemMb}MB
-             [36m                     [0m  [1;35mClaude: [0m ${if (settings.claudeApiKey.isNotBlank()) "Linked (Sonnet)" else "Ready (Sandbox)"}
-             [36m                     [0m  [1;33mOpenClaw: [0m Active (Autonomous v2.4)
+             [36m   \______/          [0m  [1;36mJVM Heap: [0m ${usedMemMb}MB / ${totalMemMb}MB
+             [36m                     [0m  [1;35mClaude: [0m ${if (settings.claudeApiKey.isNotBlank()) "API Key configurada" else "Sin API Key"}
              [36m                     [0m  [1;34mColors: [0m  [41m   [42m   [43m   [44m   [45m   [46m   [47m   [0m
         """.trimIndent()
         onOutputLine(TerminalLine(text = art, type = LineType.HEADER))
@@ -1145,19 +1081,12 @@ class TerminalEngine(
     }
 
     private fun runTop(onOutputLine: (TerminalLine) -> Unit) {
-        val serverPid = if (preferences.isRemoteServerEnabled()) "105" else "---"
-        val serverCmd = if (preferences.isRemoteServerEnabled()) "sshd-server" else "[inactivo]"
         val output = """
-            Tasks: 5 total, 1 running, 4 sleeping
-            %Cpu(s):  2.4 us,  1.1 sy,  0.0 ni, 96.5 id
-            PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
-            101 user      20   0  124.2m  45.1m  12.4m S   1.8   1.2   0:14.22 claude-daemon
-            102 user      20   0  145.8m  52.0m  14.1m S   2.1   1.5   0:18.45 openclaw-core
-            103 user      20   0   48.2m  18.4m   8.2m S   0.3   0.5   0:02.10 bash
-            104 user      20   0   22.4m   8.1m   3.2m R   0.9   0.2   0:00.08 top
-            $serverPid user      20   0   18.6m   6.4m   2.1m S   0.1   0.2   0:00.34 $serverCmd
+            [Modo Práctica (Simulado)]
+            Este comando no lee /proc del kernel Android.
+            Para ver procesos reales con 'top' o 'htop', cambia al Modo Real conectado por SSH a Termux.
         """.trimIndent()
-        onOutputLine(TerminalLine(text = output, type = LineType.OUTPUT))
+        onOutputLine(TerminalLine(text = output, type = LineType.SYSTEM))
     }
 
     private suspend fun runClaudeCommand(
