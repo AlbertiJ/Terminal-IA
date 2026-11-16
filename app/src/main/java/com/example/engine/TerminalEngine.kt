@@ -1012,7 +1012,7 @@ class TerminalEngine(
                     * installLocation:      auto (Interna o SD externa)
                     * Auto-arranque BOOT:   ${if (settings.autoStartOnBoot) "ACTIVADO" else "DESACTIVADO"}
                     * Scripts ~/.termux/boot: ${if (settings.runBootScriptsOnBoot) "ACTIVADO" else "DESACTIVADO"} (${entries.size} scripts .sh)
-                    * Auto-iniciar SSH/Web: ${if (settings.autoStartRemoteServersOnBoot) "ACTIVADO (:8022 / :8080)" else "DESACTIVADO"}
+                    * Auto-iniciar Web:     ${if (settings.autoStartRemoteServersOnBoot) "ACTIVADO (:8080)" else "DESACTIVADO"}
                     ----------------------------------------------------------------
                     Usa 'boot list' para ver los scripts o 'boot log' para ver el último arranque.
                     Configura estas opciones en Ajustes > pestaña "Arranque".

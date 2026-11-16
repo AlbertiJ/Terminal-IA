@@ -73,7 +73,7 @@ object TermuxSetupHelper {
             "mkdir -p ~/.ssh && chmod 700 ~/.ssh",
             "touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys",
             "(grep -qxF '$safeKey' ~/.ssh/authorized_keys || printf '%s\\n' '$safeKey' >> ~/.ssh/authorized_keys)",
-            "CFG=\"\$PREFIX/etc/ssh/sshd_config\" && touch \"\$CFG\" && grep -vE '^[[:space:]]*#?[[:space:]]*(Port|ListenAddress|PasswordAuthentication|PubkeyAuthentication)[[:space:]]' \"\$CFG\" > \"\$CFG.tmp\" && printf 'Port $sshPort\\nListenAddress 127.0.0.1\\nPasswordAuthentication no\\nPubkeyAuthentication yes\\n' >> \"\$CFG.tmp\" && mv \"\$CFG.tmp\" \"\$CFG\"",
+            "CFG=\"\$PREFIX/etc/ssh/sshd_config\" && mkdir -p \"\$PREFIX/etc/ssh\" && touch \"\$CFG\" && (grep -vE '^[[:space:]]*#?[[:space:]]*(Port|ListenAddress|PasswordAuthentication|PubkeyAuthentication)([[:space:]]|$)' \"\$CFG\" > \"\$CFG.tmp\" || true) && printf 'Port $sshPort\\nListenAddress 127.0.0.1\\nPasswordAuthentication no\\nPubkeyAuthentication yes\\n' >> \"\$CFG.tmp\" && mv \"\$CFG.tmp\" \"\$CFG\"",
             "ssh-keygen -A >/dev/null 2>&1 || true",
             "(pkill -x sshd >/dev/null 2>&1 || true) && sshd && echo 'Terminal-IA SSH listo en 127.0.0.1:$sshPort'"
         ).joinToString(" && ")

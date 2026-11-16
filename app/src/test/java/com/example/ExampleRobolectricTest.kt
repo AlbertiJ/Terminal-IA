@@ -431,6 +431,64 @@ class ExampleRobolectricTest {
     }
   }
 
+  @Test
+  fun `setup command succeeds when sshd_config is empty or leaves zero lines after grep`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val keyManager = com.example.ssh.SshKeyManager(context, inMemoryAesCipher())
+    val pubKey = keyManager.getOrCreatePublicKey()
+    val cmd = com.example.ssh.TermuxSetupHelper.buildSetupCommand(pubKey, sshPort = 8022)
+
+    val tempRoot = java.nio.file.Files.createTempDirectory("termux_empty_cfg_test").toFile()
+    try {
+      val fakeHome = java.io.File(tempRoot, "home").apply { mkdirs() }
+      val fakePrefix = java.io.File(tempRoot, "usr").apply { mkdirs() }
+      val fakeBin = java.io.File(tempRoot, "bin").apply { mkdirs() }
+      val sshEtcDir = java.io.File(fakePrefix, "etc/ssh").apply { mkdirs() }
+      val sshdCfg = java.io.File(sshEtcDir, "sshd_config")
+
+      for (tool in listOf("sshd", "ssh-keygen", "pkill", "pkg")) {
+        val f = java.io.File(fakeBin, tool)
+        f.writeText("#!/bin/sh\nexit 0\n")
+        f.setExecutable(true)
+      }
+
+      // Case 1: completely empty sshd_config (grep -vE returns exit code 1)
+      sshdCfg.writeText("")
+      run {
+        val pb = ProcessBuilder("/bin/sh", "-c", cmd)
+        pb.environment()["HOME"] = fakeHome.absolutePath
+        pb.environment()["PREFIX"] = fakePrefix.absolutePath
+        pb.environment()["PATH"] = "${fakeBin.absolutePath}:/bin:/usr/bin"
+        pb.redirectErrorStream(true)
+        val proc = pb.start()
+        val out = proc.inputStream.bufferedReader().readText()
+        assertEquals("Falló con sshd_config vacío: $out", 0, proc.waitFor())
+      }
+
+      // Case 2: sshd_config containing ONLY filtered directives (grep -vE filters all lines -> exit 1)
+      sshdCfg.writeText("Port 9022\nPasswordAuthentication yes\n")
+      run {
+        val pb = ProcessBuilder("/bin/sh", "-c", cmd)
+        pb.environment()["HOME"] = fakeHome.absolutePath
+        pb.environment()["PREFIX"] = fakePrefix.absolutePath
+        pb.environment()["PATH"] = "${fakeBin.absolutePath}:/bin:/usr/bin"
+        pb.redirectErrorStream(true)
+        val proc = pb.start()
+        val out = proc.inputStream.bufferedReader().readText()
+        assertEquals("Falló con sshd_config sin líneas remanentes: $out", 0, proc.waitFor())
+      }
+
+      val cfgLines = sshdCfg.readLines()
+      assertEquals(1, cfgLines.count { it == "Port 8022" })
+      assertEquals(1, cfgLines.count { it == "ListenAddress 127.0.0.1" })
+      assertEquals(1, cfgLines.count { it == "PasswordAuthentication no" })
+      assertEquals(1, cfgLines.count { it == "PubkeyAuthentication yes" })
+      assertFalse(cfgLines.any { it.contains("9022") })
+    } finally {
+      tempRoot.deleteRecursively()
+    }
+  }
+
   @Test(expected = IllegalArgumentException::class)
   fun `setup command generator rejects privileged or invalid port`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
