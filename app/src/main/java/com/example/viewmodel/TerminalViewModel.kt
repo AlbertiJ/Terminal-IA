@@ -10,6 +10,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agent.ClaudeAgentService
 import com.example.agent.OpenClawAgentService
+import com.example.boot.BootCompletedReceiver
 import com.example.data.TerminalPreferences
 import com.example.fs.VirtualFileSystem
 import com.example.engine.TerminalEngine
@@ -162,7 +163,23 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             currentDirectory = "/home/user"
         )
 
-        val initialLines = engine.getInitialWelcomeLines()
+        val bootLogLines = if (vfs.exists(BootCompletedReceiver.BOOT_LOG_PATH)) {
+            val content = vfs.readFile(BootCompletedReceiver.BOOT_LOG_PATH).getOrDefault("").trim()
+            if (content.isNotEmpty()) {
+                listOf(
+                    TerminalLine(
+                        text = "[Log del último auto-arranque (${BootCompletedReceiver.BOOT_LOG_PATH})]\n$content",
+                        type = LineType.SYSTEM
+                    )
+                )
+            } else {
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+
+        val initialLines = engine.getInitialWelcomeLines() + bootLogLines
         val claudeIntro = listOf(
             TerminalLine(
                 text = "Sesión de Claude Agent iniciada.\nEscribe directamente aquí tus dudas, código o tareas.",
@@ -180,6 +197,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
         val ips = remoteServer.getDeviceIpAddresses()
         val port = preferences.getRemotePort()
+        val shouldStartServers = preferences.isRemoteServerEnabled() || loadedSettings.autoStartRemoteServersOnBoot
 
         _uiState.value = TerminalUiState(
             sessions = listOf(mainSession, claudeSession, openClawSession),
@@ -190,16 +208,16 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                 openClawSession.id to openClawIntro
             ),
             settings = loadedSettings,
-            isRemoteServerRunning = preferences.isRemoteServerEnabled(),
+            isRemoteServerRunning = shouldStartServers,
             remoteServerPort = port,
-            isWebTerminalRunning = preferences.isRemoteServerEnabled(),
+            isWebTerminalRunning = shouldStartServers,
             webTerminalPort = 8080,
             deviceIps = ips,
             hasRemoteCredentials = preferences.hasRemoteCredentials(),
             remoteUsername = preferences.getRemoteUsername()
         )
 
-        if (preferences.isRemoteServerEnabled()) {
+        if (shouldStartServers) {
             remoteServer.start(port)
             webServer.start(8080)
         }

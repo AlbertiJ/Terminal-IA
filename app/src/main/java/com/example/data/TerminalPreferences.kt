@@ -21,6 +21,9 @@ class TerminalPreferences(context: Context) {
         private const val KEY_THEME = "terminal_theme"
         private const val KEY_FONT_SIZE = "font_size_sp"
         private const val KEY_VIBRATION = "enable_vibration"
+        private const val KEY_AUTO_START_BOOT = "auto_start_on_boot"
+        private const val KEY_AUTO_START_REMOTE = "auto_start_remote_on_boot"
+        private const val KEY_RUN_BOOT_SCRIPTS = "run_boot_scripts_on_boot"
         private const val KEY_HISTORY = "command_history"
 
         // Remote SSH / Telnet Server Credentials
@@ -55,7 +58,10 @@ class TerminalPreferences(context: Context) {
             openClawAutonomous = prefs.getBoolean(KEY_OPENCLAW_AUTONOMOUS, true),
             terminalTheme = theme,
             fontSizeSp = prefs.getInt(KEY_FONT_SIZE, 13),
-            enableVibration = prefs.getBoolean(KEY_VIBRATION, true)
+            enableVibration = prefs.getBoolean(KEY_VIBRATION, true),
+            autoStartOnBoot = prefs.getBoolean(KEY_AUTO_START_BOOT, false),
+            autoStartRemoteServersOnBoot = prefs.getBoolean(KEY_AUTO_START_REMOTE, false),
+            runBootScriptsOnBoot = prefs.getBoolean(KEY_RUN_BOOT_SCRIPTS, true)
         )
     }
 
@@ -73,6 +79,9 @@ class TerminalPreferences(context: Context) {
             putString(KEY_THEME, settings.terminalTheme.name)
             putInt(KEY_FONT_SIZE, settings.fontSizeSp)
             putBoolean(KEY_VIBRATION, settings.enableVibration)
+            putBoolean(KEY_AUTO_START_BOOT, settings.autoStartOnBoot)
+            putBoolean(KEY_AUTO_START_REMOTE, settings.autoStartRemoteServersOnBoot)
+            putBoolean(KEY_RUN_BOOT_SCRIPTS, settings.runBootScriptsOnBoot)
             apply()
         }
     }

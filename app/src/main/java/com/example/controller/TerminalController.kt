@@ -166,6 +166,13 @@ class TerminalController(
                 usage = "logs [clear|export|filter <nivel>]",
                 category = "Telemetría",
                 subcommands = listOf("clear", "export", "filter")
+            ),
+            CommandDescriptor(
+                name = "boot",
+                description = "Inspecciona el estado de auto-arranque y scripts en ~/.termux/boot",
+                usage = "boot [status|list|log]",
+                category = "Sistema",
+                subcommands = listOf("status", "list", "log")
             )
         )
 

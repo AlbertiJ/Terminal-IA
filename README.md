@@ -55,6 +55,12 @@
 * **Terminal Web**: Servidor HTTP en el puerto `8080` con consola web embebida y formulario de inicio de sesión protegido por autenticación criptográfica.
 * **Detección Automática de Red**: El comando `ip` lista dinámicamente las direcciones IPv4 de adaptadores Wi-Fi, Ethernet o Hotspot activos.
 
+### 6. ⚡ Instalación Universal (`installLocation="auto"`) y Auto-Arranque (`~/.termux/boot/`)
+* **Instalación en Cualquier Unidad**: El manifiesto declara `android:installLocation="auto"`, permitiendo instalar o mover el APK entre la memoria interna y la tarjeta SD externa del dispositivo.
+* **Auto-Arranque Compatible con Android 15/16**: `BootCompletedReceiver` escucha `BOOT_COMPLETED`, `MY_PACKAGE_REPLACED` y `QUICKBOOT_POWERON` sin iniciar servicios restringidos en segundo plano (cumplimiento API 35/36).
+* **Scripts de Inicio (`~/.termux/boot/*.sh`)**: Ejecuta automáticamente scripts validados por el sandbox (bloqueando `su`/`sudo`), genera `/home/user/.termux/boot/last_boot.log` y lanza una notificación con acceso directo a la terminal y auto-inicio de servidores `:8022` / `:8080` al abrir la app.
+* **Pestaña "Arranque" en Ajustes y Comando `boot`**: Switches gráficos en Material 3 con solicitud en tiempo de ejecución de `POST_NOTIFICATIONS` (Android 13+) y comando `boot [status|list|log]`.
+
 ---
 
 ## 📖 Guía de Usuario Inicial (Primeros Pasos)
@@ -151,6 +157,33 @@ openclaw run syscheck
 | **`claude`** | `claude "<mensaje>"` | Agentes | Envía una instrucción al agente Claude. |
 | **`openclaw`** | `openclaw run <tarea>` | Agentes | Ejecuta auditorías y tareas autónomas con OpenClaw. |
 | **`logs`** | `logs [clear\|export]` | Telemetría | Administra los logs de `TerminalController`. |
+| **`boot`** | `boot [status\|list\|log]` | Arranque | Inspecciona auto-arranque, scripts `~/.termux/boot` y logs. |
+
+---
+
+## 📦 Compilación del APK e Instalación en Cualquier Unidad
+
+El proyecto mantiene configurados los objetivos Debug y Release para generar un **APK universal** (ARM64 / ARMv7 / x86_64):
+
+```bash
+# Compilar APK Debug listo para instalar en cualquier celular o unidad
+gradle assembleDebug
+
+# Compilar APK Release (requiere KEYSTORE_PATH, STORE_PASSWORD y KEY_PASSWORD)
+gradle assembleRelease
+```
+
+* Ruta del APK generado: `app/build/outputs/apk/debug/app-debug.apk`
+* **Nota sobre tarjeta SD**: Si mueves la app a almacenamiento externo SD y la tarjeta no está montada al encender el dispositivo, Android omitirá `BOOT_COMPLETED` hasta que el usuario abra la app manualmente.
+
+---
+
+## 🔗 Referencias Técnicas y Repositorios Verificados
+
+* [`termux/termux-boot`](https://github.com/termux/termux-boot): Patrón `~/.termux/boot/*.sh` y mitigación de límites de `BOOT_COMPLETED` en Android 15+.
+* [`termux/termux-app`](https://github.com/termux/termux-app): Arquitectura de sesiones sandboxed y consola móvil.
+* [`sr01/NectarSSH`](https://github.com/sr01/NectarSSH): Cliente SSH en Kotlin + Jetpack Compose + Material 3 (`sshj`).
+* [`MannanSaood/termi`](https://github.com/MannanSaood/termi): Integración de Jetpack Compose con Storage Access Framework (SAF).
 
 ---
 
@@ -168,8 +201,8 @@ openclaw run syscheck
 
 [#Release] APK Build Production Checksum (Debug Target):
   File:    app/build/outputs/apk/debug/app-debug.apk
-  Size:    23 MB
-  SHA-256: e2b26507a4b89ab9421b7377c02557d26b4cd907448dcde98973c3301c010d85
+  Size:    24 MB
+  SHA-256: 55f5e585a1409d0fdccda9563f07978f5239d8de7ebf3ac8e6bf8391987e352d
 ========================================================================================
 ```
 

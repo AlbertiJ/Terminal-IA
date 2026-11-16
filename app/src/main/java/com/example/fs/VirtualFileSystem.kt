@@ -19,12 +19,26 @@ class VirtualFileSystem(private val context: Context) {
         val subDirs = listOf(
             "home/user/scripts",
             "home/user/projects",
+            "home/user/.termux/boot",
             "bin",
             "etc",
             "tmp"
         )
         for (sub in subDirs) {
             File(rootDir, sub).mkdirs()
+        }
+
+        // Default boot script inspired by termux/termux-boot
+        val bootScript = File(File(homeDir, ".termux/boot"), "00-boot-env.sh")
+        if (!bootScript.exists()) {
+            bootScript.writeText(
+                """
+                #!/bin/sh
+                # Scripts en ~/.termux/boot/ se ejecutan al arrancar Android (si Auto-Arranque está activo)
+                echo "Termux AI Boot Manager inicializado"
+                date
+                """.trimIndent()
+            )
         }
 
         // Default welcome.txt

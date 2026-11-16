@@ -122,5 +122,8 @@ data class AgentSettings(
     val openClawAutonomous: Boolean = true,
     val terminalTheme: TerminalThemePreset = TerminalThemePreset.HACKER_GREEN,
     val fontSizeSp: Int = 13,
-    val enableVibration: Boolean = true
+    val enableVibration: Boolean = true,
+    val autoStartOnBoot: Boolean = false,
+    val autoStartRemoteServersOnBoot: Boolean = false,
+    val runBootScriptsOnBoot: Boolean = true
 )

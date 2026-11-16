@@ -1,5 +1,10 @@
 package com.example.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,6 +27,8 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.SdStorage
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Visibility
@@ -44,6 +51,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -54,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -63,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.ContextCompat
 import com.example.model.AgentSettings
 import com.example.model.TerminalThemePreset
 
@@ -86,6 +96,29 @@ fun AgentSettingsDialog(
     var selectedTheme by remember { mutableStateOf(currentSettings.terminalTheme) }
     var fontSizeSp by remember { mutableIntStateOf(currentSettings.fontSizeSp) }
     var enableVibration by remember { mutableStateOf(currentSettings.enableVibration) }
+
+    var autoStartOnBoot by remember { mutableStateOf(currentSettings.autoStartOnBoot) }
+    var autoStartRemoteServersOnBoot by remember { mutableStateOf(currentSettings.autoStartRemoteServersOnBoot) }
+    var runBootScriptsOnBoot by remember { mutableStateOf(currentSettings.runBootScriptsOnBoot) }
+
+    val context = LocalContext.current
+    var notificationPermissionGranted by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+        )
+    }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notificationPermissionGranted = granted
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -137,8 +170,8 @@ fun AgentSettingsDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Tabs: Claude, OpenClaw, Terminal
-                val tabTitles = listOf("Claude Agent", "OpenClaw", "Apariencia")
+                // Tabs: Claude, OpenClaw, Apariencia, Arranque
+                val tabTitles = listOf("Claude", "OpenClaw", "Apariencia", "Arranque")
                 TabRow(
                     selectedTabIndex = selectedTab,
                     containerColor = selectedTheme.surface,
@@ -455,6 +488,176 @@ fun AgentSettingsDialog(
                             )
                         }
                     }
+
+                    3 -> {
+                        // Auto-boot and universal installation options
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.PowerSettingsNew,
+                                contentDescription = null,
+                                tint = selectedTheme.accentText,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "AUTO-ARRANQUE Y ALMACENAMIENTO",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = selectedTheme.accentText
+                            )
+                        }
+                        Text(
+                            text = "Configura el inicio automático compatible con Android 15/16 (sin servicios bloqueados) y scripts en ~/.termux/boot/.",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = selectedTheme.primaryText.copy(alpha = 0.7f),
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .minimumInteractiveComponentSize(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text(
+                                    text = "Auto-arranque al encender",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    color = selectedTheme.primaryText
+                                )
+                                Text(
+                                    text = "Escucha BOOT_COMPLETED y muestra notificación rápida tras reiniciar.",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 10.sp,
+                                    color = selectedTheme.primaryText.copy(alpha = 0.65f)
+                                )
+                            }
+                            Switch(
+                                checked = autoStartOnBoot,
+                                onCheckedChange = { enabled ->
+                                    autoStartOnBoot = enabled
+                                    if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationPermissionGranted) {
+                                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    }
+                                },
+                                modifier = Modifier.testTag("auto_start_boot_switch"),
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = selectedTheme.accentText,
+                                    checkedTrackColor = selectedTheme.surface
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .minimumInteractiveComponentSize(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text(
+                                    text = "Ejecutar scripts ~/.termux/boot/*.sh",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    color = if (autoStartOnBoot) selectedTheme.primaryText else selectedTheme.primaryText.copy(alpha = 0.5f)
+                                )
+                                Text(
+                                    text = "Valida sandbox (bloquea su/sudo) y guarda log en last_boot.log.",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 10.sp,
+                                    color = selectedTheme.primaryText.copy(alpha = 0.65f)
+                                )
+                            }
+                            Switch(
+                                checked = runBootScriptsOnBoot,
+                                enabled = autoStartOnBoot,
+                                onCheckedChange = { runBootScriptsOnBoot = it },
+                                modifier = Modifier.testTag("run_boot_scripts_switch"),
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = selectedTheme.accentText,
+                                    checkedTrackColor = selectedTheme.surface
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .minimumInteractiveComponentSize(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text(
+                                    text = "Auto-iniciar SSH (:8022) y Web (:8080)",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    color = selectedTheme.primaryText
+                                )
+                                Text(
+                                    text = "Inicia consola remota y Terminal Web automáticamente al abrir la app.",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 10.sp,
+                                    color = selectedTheme.primaryText.copy(alpha = 0.65f)
+                                )
+                            }
+                            Switch(
+                                checked = autoStartRemoteServersOnBoot,
+                                onCheckedChange = { autoStartRemoteServersOnBoot = it },
+                                modifier = Modifier.testTag("auto_start_remote_switch"),
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = selectedTheme.accentText,
+                                    checkedTrackColor = selectedTheme.surface
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(selectedTheme.surface)
+                                .border(1.dp, selectedTheme.accentText.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                .padding(10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.SdStorage,
+                                    contentDescription = null,
+                                    tint = selectedTheme.primaryText,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Instalación Universal (installLocation=\"auto\")",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    color = selectedTheme.primaryText
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "• La APK puede instalarse o moverse entre memoria interna y tarjeta SD externa.\n• Si mueves la app a SD externa y la unidad no está montada al encender, Android omitirá BOOT_COMPLETED hasta abrirla.\n• Para estabilidad en segundo plano, configura Batería en 'Sin restricciones'.",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp,
+                                color = selectedTheme.primaryText.copy(alpha = 0.8f)
+                            )
+                        }
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -484,7 +687,10 @@ fun AgentSettingsDialog(
                                 openClawAutonomous = openClawAutonomous,
                                 terminalTheme = selectedTheme,
                                 fontSizeSp = fontSizeSp,
-                                enableVibration = enableVibration
+                                enableVibration = enableVibration,
+                                autoStartOnBoot = autoStartOnBoot,
+                                autoStartRemoteServersOnBoot = autoStartRemoteServersOnBoot,
+                                runBootScriptsOnBoot = runBootScriptsOnBoot
                             )
                             onSave(updated)
                         },

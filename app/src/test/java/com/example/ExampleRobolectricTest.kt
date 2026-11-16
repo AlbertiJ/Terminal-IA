@@ -248,4 +248,57 @@ class ExampleRobolectricTest {
     assertTrue(jsonOutput.contains("AUDIT_RED_TEAM"))
     assertTrue(jsonOutput.contains("AUDIT_BLUE_TEAM"))
   }
+
+  @Test
+  fun `preferences persists auto-boot and remote server startup options`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val prefs = TerminalPreferences(context)
+
+    val custom = prefs.getSettings().copy(
+        autoStartOnBoot = true,
+        autoStartRemoteServersOnBoot = true,
+        runBootScriptsOnBoot = false
+    )
+    prefs.saveSettings(custom)
+
+    val reloaded = prefs.getSettings()
+    assertTrue(reloaded.autoStartOnBoot)
+    assertTrue(reloaded.autoStartRemoteServersOnBoot)
+    assertFalse(reloaded.runBootScriptsOnBoot)
+  }
+
+  @Test
+  fun `boot completed receiver runs safe boot scripts and blocks privilege escalation`() = kotlinx.coroutines.test.runTest {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val prefs = TerminalPreferences(context)
+    val vfs = VirtualFileSystem(context)
+    val scriptManager = com.example.script.ScriptManager(context, vfs)
+
+    // Verify default non-destructive sample boot script is seeded
+    val samplePath = "${com.example.boot.BootCompletedReceiver.BOOT_DIR}/00-boot-env.sh"
+    assertTrue(vfs.exists(samplePath))
+    scriptManager.setExecutable(samplePath, true)
+
+    // Add a dangerous script in ~/.termux/boot/ to ensure sandbox blocks it
+    val evilBootPath = "${com.example.boot.BootCompletedReceiver.BOOT_DIR}/99-evil.sh"
+    vfs.writeFile(evilBootPath, "#!/bin/sh\nsudo id\n")
+    scriptManager.setExecutable(evilBootPath, true)
+
+    prefs.saveSettings(
+        prefs.getSettings().copy(
+            autoStartOnBoot = true,
+            runBootScriptsOnBoot = true,
+            autoStartRemoteServersOnBoot = true
+        )
+    )
+
+    val report = com.example.boot.BootCompletedReceiver.executeBootSequence(context)
+    assertTrue(report.executedCount >= 1)
+    assertTrue(report.blockedCount >= 1)
+    assertTrue(report.summaryLog.contains("[BLOQUEADO]"))
+    assertTrue(vfs.exists(com.example.boot.BootCompletedReceiver.BOOT_LOG_PATH))
+
+    // Cleanup evil script
+    vfs.deleteFile(evilBootPath)
+  }
 }

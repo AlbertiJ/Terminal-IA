@@ -155,6 +155,7 @@ class TerminalEngine(
             "script", "scripts" -> handleScriptCommand(args, currentDir, onOpenEditor, onOutputLine)
             "chmod" -> handleChmodCommand(args, currentDir, onOutputLine)
             "history" -> handleHistoryCommand(args, onOutputLine)
+            "boot" -> handleBootCommand(args, settings, onOutputLine)
             "pkg", "apt" -> runPkg(args, onOutputLine)
             "top", "ps" -> runTop(onOutputLine)
             "claude" -> runClaudeCommand(args, settings, onOutputLine)
@@ -1056,6 +1057,60 @@ class TerminalEngine(
         sb.append("------------------------------------------------\n")
         sb.append("* Usa las flechas ↑ / ↓ del teclado para navegar por el historial.")
         onOutputLine(TerminalLine(text = sb.toString().trimEnd(), type = LineType.OUTPUT))
+    }
+
+    private fun handleBootCommand(
+        args: List<String>,
+        settings: AgentSettings,
+        onOutputLine: (TerminalLine) -> Unit
+    ) {
+        val sub = args.firstOrNull()?.lowercase() ?: "status"
+        val bootDir = com.example.boot.BootCompletedReceiver.BOOT_DIR
+        val bootLogPath = com.example.boot.BootCompletedReceiver.BOOT_LOG_PATH
+        when (sub) {
+            "status" -> {
+                val entries = vfs.listDirectory(bootDir).getOrDefault(emptyList())
+                    .filter { !it.isDirectory && it.name.endsWith(".sh") }
+                val text = """
+                    [Estado de Auto-Arranque & Almacenamiento Universal]
+                    * installLocation:      auto (Interna o SD externa)
+                    * Auto-arranque BOOT:   ${if (settings.autoStartOnBoot) "ACTIVADO" else "DESACTIVADO"}
+                    * Scripts ~/.termux/boot: ${if (settings.runBootScriptsOnBoot) "ACTIVADO" else "DESACTIVADO"} (${entries.size} scripts .sh)
+                    * Auto-iniciar SSH/Web: ${if (settings.autoStartRemoteServersOnBoot) "ACTIVADO (:8022 / :8080)" else "DESACTIVADO"}
+                    ----------------------------------------------------------------
+                    Usa 'boot list' para ver los scripts o 'boot log' para ver el último arranque.
+                    Configura estas opciones en Ajustes > pestaña "Arranque".
+                """.trimIndent()
+                onOutputLine(TerminalLine(text = text, type = LineType.OUTPUT))
+            }
+            "list", "ls" -> {
+                val entries = vfs.listDirectory(bootDir).getOrDefault(emptyList())
+                    .filter { !it.isDirectory }
+                    .sortedBy { it.name }
+                if (entries.isEmpty()) {
+                    onOutputLine(TerminalLine(text = "(Sin archivos en $bootDir)", type = LineType.OUTPUT))
+                    return
+                }
+                val sb = java.lang.StringBuilder("--- SCRIPTS EN $bootDir ---\n")
+                for (entry in entries) {
+                    val path = "$bootDir/${entry.name}"
+                    val execFlag = if (scriptManager.isExecutable(path)) "+x" else "-x"
+                    sb.append("  [${execFlag}] ${entry.name} (${entry.size} bytes)\n")
+                }
+                onOutputLine(TerminalLine(text = sb.toString().trimEnd(), type = LineType.OUTPUT))
+            }
+            "log" -> {
+                if (!vfs.exists(bootLogPath)) {
+                    onOutputLine(TerminalLine(text = "No existe aún $bootLogPath (se genera tras BOOT_COMPLETED).", type = LineType.SYSTEM))
+                    return
+                }
+                val logContent = vfs.readFile(bootLogPath).getOrDefault("")
+                onOutputLine(TerminalLine(text = logContent, type = LineType.OUTPUT))
+            }
+            else -> {
+                onOutputLine(TerminalLine(text = "boot: subcomando '$sub' no reconocido. Usa: boot [status|list|log]", type = LineType.ERROR))
+            }
+        }
     }
 
     private fun runPkg(args: List<String>, onOutputLine: (TerminalLine) -> Unit) {
