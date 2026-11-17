@@ -44,14 +44,20 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.VerticalSplit
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
+import com.example.model.ProposalApprovalStatus
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -77,6 +83,7 @@ import com.example.viewmodel.TerminalViewModel
 @Composable
 fun TerminalScreen(viewModel: TerminalViewModel) {
     val uiState by viewModel.uiState.collectAsState()
+    val agentState by viewModel.agentUiState.collectAsState()
     val theme = uiState.settings.terminalTheme
     val listState = rememberLazyListState()
     val agentListState = rememberLazyListState()
@@ -124,6 +131,10 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                 .padding(innerPadding)
                 .background(theme.background)
         ) {
+            val pendingProposalCount = agentState.proposals.count {
+                it.approvalStatus == ProposalApprovalStatus.PENDING
+            }
+
             // Top App Bar
             TerminalTopBar(
                 currentPath = currentSession?.currentDirectory ?: "/home/user",
@@ -131,8 +142,11 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                 isRealSshConnected = uiState.realSshConnectionState is RealSshConnectionState.Connected,
                 isWebRunning = uiState.isWebTerminalRunning,
                 isSplitScreenMode = uiState.isSplitScreenMode,
+                pendingAgentProposals = pendingProposalCount,
+                isAgentBusy = agentState.isBusy,
                 pulseAlpha = alphaAnim,
                 theme = theme,
+                onOpenAgentPanel = { viewModel.openAgentPanel() },
                 onOpenWizard = { viewModel.openSetupWizard() },
                 onOpenSettings = { viewModel.openSettingsDialog() },
                 onOpenRemoteAccess = { viewModel.openRemoteAccessDialog() },
@@ -151,6 +165,71 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                 theme = theme,
                 onSelectMode = { viewModel.setTerminalMode(it) }
             )
+
+            if (agentState.isBusy || pendingProposalCount > 0) {
+                Surface(
+                    color = if (agentState.isBusy) Color(0xFFFF1744).copy(alpha = 0.16f) else theme.surface,
+                    border = BorderStroke(
+                        1.dp,
+                        if (agentState.isBusy) Color(0xFFFF5252) else theme.claudeColor.copy(alpha = 0.7f)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = when {
+                                agentState.isExecutingCommand -> "Agente IA ejecutando comando aprobado..."
+                                agentState.isQueryingProvider -> "Agente IA consultando proveedor..."
+                                else -> "Agente IA: $pendingProposalCount comando(s) esperando tu aprobación"
+                            },
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (agentState.isBusy) Color(0xFFFF8A80) else theme.claudeColor,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { viewModel.openAgentPanel() }
+                        )
+                        if (agentState.isBusy) {
+                            Button(
+                                onClick = { viewModel.stopAgentExecution() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFD50000),
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("top_stop_agent_button")
+                            ) {
+                                Icon(Icons.Default.Stop, contentDescription = "Parar", modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("PARAR", fontFamily = FontFamily.Monospace, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            Text(
+                                text = "Revisar",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF00E676),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(theme.background)
+                                    .clickable { viewModel.openAgentPanel() }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
 
             if (uiState.terminalMode == AppTerminalMode.REAL_TERMUX) {
                 // REAL MODE: pure VT100/xterm PTY over Termux SSH
@@ -413,6 +492,25 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
             )
         }
 
+        if (uiState.showAgentPanel) {
+            AgentAssistantDialog(
+                settings = uiState.settings,
+                agentState = agentState,
+                isRealSshConnected = uiState.realSshConnectionState is RealSshConnectionState.Connected,
+                theme = theme,
+                onSubmitPrompt = { viewModel.submitAgentPrompt(it) },
+                onApproveProposal = { viewModel.approveAgentProposal(it) },
+                onRejectProposal = { viewModel.rejectAgentProposal(it) },
+                onStopExecution = { viewModel.stopAgentExecution() },
+                onUpdateWorkingDir = { viewModel.updateAgentWorkingDir(it) },
+                onToggleAutoApprove = { viewModel.setAgentAutoApproveReadOnly(it) },
+                onAddAllowlistCommand = { viewModel.addReadOnlyAllowlistCommand(it) },
+                onRemoveAllowlistCommand = { viewModel.removeReadOnlyAllowlistCommand(it) },
+                onOpenSettings = { viewModel.openSettingsDialog() },
+                onDismiss = { viewModel.closeAgentPanel() }
+            )
+        }
+
         if (uiState.showSettingsDialog) {
             AgentSettingsDialog(
                 currentSettings = uiState.settings,
@@ -668,8 +766,11 @@ fun TerminalTopBar(
     isRealSshConnected: Boolean,
     isWebRunning: Boolean,
     isSplitScreenMode: Boolean,
+    pendingAgentProposals: Int,
+    isAgentBusy: Boolean,
     pulseAlpha: Float,
     theme: com.example.model.TerminalThemePreset,
+    onOpenAgentPanel: () -> Unit,
     onOpenWizard: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenRemoteAccess: () -> Unit,
@@ -742,6 +843,30 @@ fun TerminalTopBar(
                         .alpha(if (isExecuting) pulseAlpha else 1.0f)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
+
+                IconButton(
+                    onClick = onOpenAgentPanel,
+                    modifier = Modifier
+                        .size(30.dp)
+                        .testTag("agent_panel_top_button")
+                ) {
+                    Box(contentAlignment = Alignment.TopEnd) {
+                        Icon(
+                            imageVector = Icons.Default.SmartToy,
+                            contentDescription = "Agente IA (Propuestas SSH)",
+                            tint = theme.claudeColor,
+                            modifier = Modifier.size(17.dp)
+                        )
+                        if (isAgentBusy || pendingAgentProposals > 0) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isAgentBusy) Color(0xFFFF5252) else Color(0xFFFFB300))
+                            )
+                        }
+                    }
+                }
 
                 IconButton(
                     onClick = onOpenWizard,

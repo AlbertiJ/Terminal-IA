@@ -1,6 +1,7 @@
 package com.example.model
 
 import androidx.compose.ui.graphics.Color
+import com.example.agent.AgentCommandPolicy
 import java.util.UUID
 
 enum class LineType {
@@ -9,9 +10,9 @@ enum class LineType {
     ERROR,         // stderr or failed command
     SYSTEM,        // System notifications or boot message
     HEADER,        // Welcome / Neofetch ASCII art
-    AGENT_CLAUDE,  // Output from Claude agent
-    AGENT_OPENCLAW,// Output from OpenClaw autonomous agent
-    AGENT_STEP     // Step in agent workflow (Plan, Tool execution, Result)
+    AGENT_CLAUDE,  // Output from AI agent
+    AGENT_OPENCLAW,// Legacy/agent step badge
+    AGENT_STEP     // Step in agent workflow
 }
 
 enum class SessionType {
@@ -19,6 +20,59 @@ enum class SessionType {
     CLAUDE,
     OPENCLAW
 }
+
+enum class AiProviderType(val displayName: String, val shortLabel: String) {
+    NONE("Sin proveedor (Desactivado)", "Desactivado"),
+    ANTHROPIC_CLOUD("Anthropic Cloud API (Claude)", "Anthropic Cloud"),
+    OPENAI_CLOUD("OpenAI / Compatible Cloud (HTTPS)", "OpenAI Cloud"),
+    TERMUX_LOCAL_OPENAI("Servidor Local OpenAI en Termux (127.0.0.1)", "Local 127.0.0.1")
+}
+
+enum class ProposalApprovalStatus(val label: String) {
+    PENDING("Pendiente de aprobación"),
+    APPROVED_MANUAL("Aprobado manualmente"),
+    AUTO_APPROVED_READ_ONLY("Auto-aprobado (solo lectura)"),
+    REJECTED("Rechazado"),
+    CANCELLED("Cancelado")
+}
+
+enum class ProposalExecutionStatus(val label: String) {
+    NOT_EXECUTED("Sin ejecutar"),
+    RUNNING("Ejecutando en SSH..."),
+    COMPLETED("Ejecutado"),
+    FAILED("Error al ejecutar"),
+    STOPPED_BY_USER("Detenido por el usuario")
+}
+
+data class AgentCommandProposal(
+    val id: String = UUID.randomUUID().toString(),
+    val timestamp: Long = System.currentTimeMillis(),
+    val providerLabel: String,
+    val userPrompt: String,
+    val command: String,
+    val workingDir: String,
+    val canAutoApprove: Boolean,
+    val policyReason: String,
+    val isReadOnlySafeInWorkspace: Boolean,
+    val approvalStatus: ProposalApprovalStatus = ProposalApprovalStatus.PENDING,
+    val executionStatus: ProposalExecutionStatus = ProposalExecutionStatus.NOT_EXECUTED,
+    val exitCode: Int? = null,
+    val output: String = ""
+)
+
+data class AgentAuditRecord(
+    val id: String = UUID.randomUUID().toString(),
+    val timestamp: Long = System.currentTimeMillis(),
+    val providerLabel: String,
+    val userPrompt: String,
+    val proposedCommand: String,
+    val workingDir: String,
+    val decision: ProposalApprovalStatus,
+    val executionStatus: ProposalExecutionStatus,
+    val exitCode: Int? = null,
+    val output: String = "",
+    val policyReason: String = ""
+)
 
 data class TerminalLine(
     val id: String = UUID.randomUUID().toString(),
@@ -114,12 +168,19 @@ enum class TerminalThemePreset(
 }
 
 data class AgentSettings(
+    val aiProviderType: AiProviderType = AiProviderType.NONE,
     val claudeApiKey: String = "",
-    val claudeModel: String = "claude-3-5-sonnet-20241022",
-    val claudeSystemPrompt: String = "You are Claude, an expert AI programming and Linux system assistant operating directly within a Termux Android terminal console. Provide direct, concise, and executable technical solutions.",
-    val openClawEndpoint: String = "https://api.openclaw.io/v1",
-    val openClawToken: String = "",
-    val openClawAutonomous: Boolean = true,
+    val claudeModel: String = "claude-sonnet-4-20250514",
+    val claudeSystemPrompt: String = "Eres un asistente técnico de Linux y Termux. Solo propones comandos en bloques ```sh``` para que el usuario los apruebe; nunca afirmes haber ejecutado comandos.",
+    val openAiBaseUrl: String = "https://api.openai.com/v1",
+    val openAiApiKey: String = "",
+    val openAiModel: String = "gpt-4o-mini",
+    val localOpenAiBaseUrl: String = "http://127.0.0.1:11434/v1",
+    val localOpenAiToken: String = "",
+    val localOpenAiModel: String = "qwen2.5-coder:7b",
+    val agentWorkingDir: String = "~",
+    val agentAutoApproveReadOnly: Boolean = false,
+    val agentReadOnlyAllowlist: Set<String> = AgentCommandPolicy.DEFAULT_READ_ONLY_ALLOWLIST,
     val terminalTheme: TerminalThemePreset = TerminalThemePreset.HACKER_GREEN,
     val fontSizeSp: Int = 13,
     val enableVibration: Boolean = true,

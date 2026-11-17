@@ -342,72 +342,55 @@ class TerminalEngine(
     private suspend fun handleAgentApiCommand(args: List<String>, settings: AgentSettings, onOutputLine: (TerminalLine) -> Unit) {
         if (args.isEmpty()) {
             val help = """
-                [Termux AI Agent API Suite]
-                Funciones de API programáticas para scripts y pipelines:
-                  agent api claude "prompt"     Llamada directa en formato JSON
-                  agent api openclaw "goal"     Ejecución estructurada de herramientas
-                  agent list                    Lista de agentes y modelos activos
-                  agent status                  Estado y seguridad de los agentes
+                [Terminal-IA — Proveedor de Agentes IA]
+                  agent status                  Ver proveedor IA, carpeta de trabajo y auto-aprobación
+                  claude "consulta"             Consultar al proveedor IA configurado (solo propone comandos)
+                Nota: Para aprobar/rechazar comandos propuestos y ejecutarlos por SSH real, abre 'Agente IA' en la barra superior.
             """.trimIndent()
             onOutputLine(TerminalLine(text = help, type = LineType.SYSTEM))
             return
         }
 
         when (args[0].lowercase()) {
-            "api" -> {
-                if (args.size < 3) {
-                    onOutputLine(TerminalLine(text = "Uso: agent api [claude|openclaw] <instrucción>", type = LineType.ERROR))
-                    return
+            "status", "list" -> {
+                val hasKey = when (settings.aiProviderType) {
+                    com.example.model.AiProviderType.NONE -> "Sin proveedor"
+                    com.example.model.AiProviderType.ANTHROPIC_CLOUD ->
+                        "Anthropic Cloud (${securityManager.maskSecret(settings.claudeApiKey)})"
+                    com.example.model.AiProviderType.OPENAI_CLOUD ->
+                        "OpenAI Cloud (${securityManager.maskSecret(settings.openAiApiKey)})"
+                    com.example.model.AiProviderType.TERMUX_LOCAL_OPENAI ->
+                        "Local Termux (${settings.localOpenAiBaseUrl})"
                 }
-                val targetAgent = args[1].lowercase()
-                val prompt = args.drop(2).joinToString(" ").removeSurrounding("\"")
-
-                if (targetAgent == "claude") {
-                    val res = claudeService.queryClaude(prompt, settings.claudeApiKey, settings.claudeModel, settings.claudeSystemPrompt)
-                    res.onSuccess { r ->
-                        val json = JSONObject().apply {
-                            put("agent", "claude")
-                            put("model", r.modelUsed)
-                            put("is_live", r.isLiveApi)
-                            put("response", r.text)
-                            put("suggested_command", r.suggestedCommand ?: JSONObject.NULL)
-                        }
-                        onOutputLine(TerminalLine(text = json.toString(2), type = LineType.OUTPUT))
-                    }.onFailure { err ->
-                        onOutputLine(TerminalLine(text = "{\"error\": \"${err.localizedMessage}\"}", type = LineType.ERROR))
-                    }
-                } else if (targetAgent == "openclaw") {
-                    openClawService.executeTask(prompt, settings.openClawEndpoint, settings.openClawToken) { step ->
-                        // Step callback
-                    }
-                    val json = JSONObject().apply {
-                        put("agent", "openclaw")
-                        put("goal", prompt)
-                        put("status", "completed")
-                        put("autonomous", settings.openClawAutonomous)
-                    }
-                    onOutputLine(TerminalLine(text = json.toString(2), type = LineType.OUTPUT))
-                }
-            }
-            "list" -> {
-                val list = """
-                    [Agentes Disponibles en Termux AI]
-                    1. claude (Anthropic API - Sonnet/Haiku/Opus) - Estado: Listo
-                    2. openclaw (Autonomous Crawling & Tool Executor) - Estado: Activo
-                """.trimIndent()
-                onOutputLine(TerminalLine(text = list, type = LineType.OUTPUT))
-            }
-            "status" -> {
-                val keyMasked = securityManager.maskSecret(settings.claudeApiKey)
                 val status = """
                     [Estado de Agentes & Políticas de Seguridad]
-                    * Claude Model: ${settings.claudeModel}
-                    * Claude API Key: $keyMasked (Almacenada con AES-256-GCM)
-                    * OpenClaw Endpoint: ${settings.openClawEndpoint}
-                    * Modo Autónomo: ${if (settings.openClawAutonomous) "Permitido con filtro de seguridad" else "Manual"}
-                    * Protección de comandos destructivos: ACTIVA
+                    * Proveedor activo: ${settings.aiProviderType.displayName}
+                    * Credencial/URL: $hasKey
+                    * Carpeta de trabajo: ${settings.agentWorkingDir}
+                    * Auto-aprobar solo lectura: ${if (settings.agentAutoApproveReadOnly) "ACTIVADO (lista blanca)" else "DESACTIVADO (aprobación manual obligatoria)"}
+                    * Comandos en lista blanca: ${settings.agentReadOnlyAllowlist.sorted().joinToString(", ")}
                 """.trimIndent()
                 onOutputLine(TerminalLine(text = status, type = LineType.OUTPUT))
+            }
+            "api" -> {
+                if (args.size < 3) {
+                    onOutputLine(TerminalLine(text = "Uso: agent api claude <instrucción>", type = LineType.ERROR))
+                    return
+                }
+                val prompt = args.drop(2).joinToString(" ").removeSurrounding("\"")
+                val unified = com.example.agent.UnifiedLlmAgentClient()
+                val res = unified.queryProvider(prompt, settings)
+                res.onSuccess { r ->
+                    val json = JSONObject().apply {
+                        put("provider", r.providerLabel)
+                        put("model", r.modelUsed)
+                        put("response", r.explanationText)
+                        put("proposed_commands", org.json.JSONArray(r.proposedCommands))
+                    }
+                    onOutputLine(TerminalLine(text = json.toString(2), type = LineType.OUTPUT))
+                }.onFailure { err ->
+                    onOutputLine(TerminalLine(text = "{\"error\": \"${err.localizedMessage}\"}", type = LineType.ERROR))
+                }
             }
             else -> onOutputLine(TerminalLine(text = "agent: subcomando desconocido '${args[0]}'", type = LineType.ERROR))
         }
@@ -557,7 +540,7 @@ class TerminalEngine(
              [36m   / >_   \          [0m  [1;36mApp: [0m Terminal-IA
              [36m  |  CLAW  |         [0m  [1;36mCPU: [0m ${Build.HARDWARE} (${Runtime.getRuntime().availableProcessors()} cores)
              [36m   \______/          [0m  [1;36mJVM Heap: [0m ${usedMemMb}MB / ${totalMemMb}MB
-             [36m                     [0m  [1;35mClaude: [0m ${if (settings.claudeApiKey.isNotBlank()) "API Key configurada" else "Sin API Key"}
+             [36m                     [0m  [1;35mProveedor IA: [0m ${settings.aiProviderType.shortLabel}
              [36m                     [0m  [1;34mColors: [0m  [41m   [42m   [43m   [44m   [45m   [46m   [47m   [0m
         """.trimIndent()
         onOutputLine(TerminalLine(text = art, type = LineType.HEADER))
@@ -1112,54 +1095,48 @@ class TerminalEngine(
         if (args.isEmpty()) {
             onOutputLine(
                 TerminalLine(
-                    text = "Uso de Claude Agent:\n  claude \"tu pregunta o instrucción\"\n  claude -i (inicia modo interactivo)\n  claude config (ver estado seguro de conexión)",
+                    text = "Uso:\n  claude \"tu consulta\"\n  claude config (ver proveedor configurado)\nNota: Usa el panel 'Agente IA' para aprobar y ejecutar propuestas por SSH real.",
                     type = LineType.AGENT_CLAUDE,
-                    agentName = "Claude"
+                    agentName = "Agente IA"
                 )
             )
             return
         }
 
         if (args[0] == "config") {
-            val keyStatus = if (settings.claudeApiKey.isNotBlank()) {
-                "Configurada (${securityManager.maskSecret(settings.claudeApiKey)} - Cifrada AES-256-GCM)"
-            } else {
-                "Modo Libre / Sandbox (Sin clave)"
-            }
             val info = """
-                [Configuración Segura de Claude Agent]
-                * Modelo: ${settings.claudeModel}
-                * API Key: $keyStatus
-                * Modo: 100% Gratuito y configurable en Ajustes
-                * Instrucción del Sistema: ${settings.claudeSystemPrompt}
+                [Configuración Segura del Agente IA]
+                * Proveedor: ${settings.aiProviderType.displayName}
+                * Carpeta de trabajo: ${settings.agentWorkingDir}
+                * Aprobación automática lectura: ${if (settings.agentAutoApproveReadOnly) "Activada" else "Desactivada (manual)"}
             """.trimIndent()
-            onOutputLine(TerminalLine(text = info, type = LineType.AGENT_CLAUDE, agentName = "Claude"))
+            onOutputLine(TerminalLine(text = info, type = LineType.AGENT_CLAUDE, agentName = "Agente IA"))
             return
         }
 
         val prompt = args.joinToString(" ").removeSurrounding("\"")
-        onOutputLine(TerminalLine(text = "[Consultando a Claude: \"$prompt\"]", type = LineType.SYSTEM))
-
-        val result = claudeService.queryClaude(
-            prompt = prompt,
-            apiKey = settings.claudeApiKey,
-            model = settings.claudeModel,
-            systemPrompt = settings.claudeSystemPrompt
-        )
+        val unified = com.example.agent.UnifiedLlmAgentClient()
+        val result = unified.queryProvider(prompt, settings)
 
         result.onSuccess { res ->
+            val proposalsNote = if (res.proposedCommands.isNotEmpty()) {
+                "\n\n[Comandos propuestos (no ejecutados en Modo Práctica — abre 'Agente IA' en Modo Real para aprobar/ejecutar por SSH)]:\n" +
+                    res.proposedCommands.joinToString("\n") { "  - $it" }
+            } else {
+                ""
+            }
             onOutputLine(
                 TerminalLine(
-                    text = res.text,
+                    text = "${res.explanationText}$proposalsNote",
                     type = LineType.AGENT_CLAUDE,
-                    agentName = "Claude",
-                    commandText = res.suggestedCommand
+                    agentName = res.providerLabel,
+                    commandText = res.proposedCommands.firstOrNull()
                 )
             )
         }.onFailure { err ->
             onOutputLine(
                 TerminalLine(
-                    text = "Error de Claude Agent: ${err.localizedMessage}",
+                    text = err.localizedMessage ?: "No hay proveedor de IA configurado.",
                     type = LineType.ERROR
                 )
             )
@@ -1167,82 +1144,15 @@ class TerminalEngine(
     }
 
     private suspend fun runOpenClawCommand(
-        args: List<String>,
-        settings: AgentSettings,
+        @Suppress("UNUSED_PARAMETER") args: List<String>,
+        @Suppress("UNUSED_PARAMETER") settings: AgentSettings,
         onOutputLine: (TerminalLine) -> Unit
     ) {
-        if (args.isEmpty()) {
-            onOutputLine(
-                TerminalLine(
-                    text = "Uso de OpenClaw Agent:\n  openclaw \"objetivo a cumplir\"\n  openclaw run syscheck\n  openclaw run audit\n  openclaw status",
-                    type = LineType.AGENT_OPENCLAW,
-                    agentName = "OpenClaw"
-                )
+        onOutputLine(
+            TerminalLine(
+                text = "El motor simulado de OpenClaw fue eliminado (Fase 3). Configura Anthropic Cloud, OpenAI Cloud o un servidor local OpenAI en 127.0.0.1 desde Ajustes y abre 'Agente IA' en Modo Real.",
+                type = LineType.ERROR
             )
-            return
-        }
-
-        if (args[0] == "status") {
-            val status = """
-                [OpenClaw Agent Status]
-                * Daemon: ACTIVO (v2.4.0 Autonomous Engine)
-                * Endpoint: ${settings.openClawEndpoint}
-                * Token: ${securityManager.maskSecret(settings.openClawToken)}
-                * Permisos de ejecución: ${if (settings.openClawAutonomous) "Autónomo (Tool auto-exec)" else "Manual"}
-                * Herramientas integradas: [sys_probe, fs_scanner, net_telemetry, bash_executor]
-            """.trimIndent()
-            onOutputLine(TerminalLine(text = status, type = LineType.AGENT_OPENCLAW, agentName = "OpenClaw"))
-            return
-        }
-
-        val goal = if (args[0] == "run" && args.size > 1) {
-            args.drop(1).joinToString(" ")
-        } else {
-            args.joinToString(" ").removeSurrounding("\"")
-        }
-
-        onOutputLine(TerminalLine(text = "[OpenClaw Agent iniciando objetivo: \"$goal\"]", type = LineType.SYSTEM))
-
-        openClawService.executeTask(
-            goal = goal,
-            endpoint = settings.openClawEndpoint,
-            token = settings.openClawToken,
-            onStep = { step ->
-                when (step) {
-                    is OpenClawAgentService.AgentStep.Plan -> {
-                        val planStr = "Plan de ejecución OpenClaw:\n" + step.steps.mapIndexed { idx, s -> "  ${idx + 1}. $s" }.joinToString("\n")
-                        onOutputLine(TerminalLine(text = planStr, type = LineType.AGENT_STEP, agentName = "OpenClaw"))
-                    }
-                    is OpenClawAgentService.AgentStep.ToolCall -> {
-                        onOutputLine(
-                            TerminalLine(
-                                text = "-> [Tool: ${step.tool}] ${step.command}",
-                                type = LineType.AGENT_STEP,
-                                agentName = "OpenClaw",
-                                toolCallName = step.tool
-                            )
-                        )
-                    }
-                    is OpenClawAgentService.AgentStep.ToolResult -> {
-                        onOutputLine(
-                            TerminalLine(
-                                text = "<- [Result] ${step.output}",
-                                type = LineType.AGENT_STEP,
-                                agentName = "OpenClaw"
-                            )
-                        )
-                    }
-                    is OpenClawAgentService.AgentStep.Summary -> {
-                        onOutputLine(
-                            TerminalLine(
-                                text = step.text,
-                                type = LineType.AGENT_OPENCLAW,
-                                agentName = "OpenClaw"
-                            )
-                        )
-                    }
-                }
-            }
         )
     }
 }

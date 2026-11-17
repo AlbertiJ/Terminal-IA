@@ -2,27 +2,45 @@ package com.example.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.example.agent.AgentCommandPolicy
 import com.example.model.AgentSettings
+import com.example.model.AiProviderType
 import com.example.model.TerminalThemePreset
 import com.example.security.SecurityManager
+import com.example.ssh.AndroidKeyStoreWrappingCipher
+import com.example.ssh.KeyWrappingCipher
 
 class TerminalPreferences @JvmOverloads constructor(
     context: Context,
+    secretCipher: KeyWrappingCipher = AndroidKeyStoreWrappingCipher(SecurityManager.SECRETS_KEY_ALIAS),
     timeProvider: () -> Long = { System.currentTimeMillis() }
 ) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences("termux_ai_prefs", Context.MODE_PRIVATE)
-    private val securityManager = SecurityManager(context, timeProvider)
+    private val securityManager = SecurityManager(context, timeProvider, secretCipher)
 
     companion object {
         const val MIN_REMOTE_PASSWORD_LENGTH = 12
 
+        private const val KEY_AI_PROVIDER_TYPE = "ai_provider_type"
         private const val KEY_CLAUDE_API_KEY_ENC = "claude_api_key_enc"
         private const val KEY_CLAUDE_MODEL = "claude_model"
         private const val KEY_CLAUDE_SYSTEM_PROMPT = "claude_system_prompt"
-        private const val KEY_OPENCLAW_ENDPOINT = "openclaw_endpoint"
-        private const val KEY_OPENCLAW_TOKEN_ENC = "openclaw_token_enc"
-        private const val KEY_OPENCLAW_AUTONOMOUS = "openclaw_autonomous"
+        private const val KEY_OPENAI_BASE_URL = "openai_base_url"
+        private const val KEY_OPENAI_API_KEY_ENC = "openai_api_key_enc"
+        private const val KEY_OPENAI_MODEL = "openai_model"
+        private const val KEY_LOCAL_OPENAI_BASE_URL = "local_openai_base_url"
+        private const val KEY_LOCAL_OPENAI_TOKEN_ENC = "local_openai_token_enc"
+        private const val KEY_LOCAL_OPENAI_MODEL = "local_openai_model"
+        private const val KEY_AGENT_WORKING_DIR = "agent_working_dir"
+        private const val KEY_AGENT_AUTO_APPROVE_READONLY = "agent_auto_approve_readonly"
+        private const val KEY_AGENT_READONLY_ALLOWLIST = "agent_readonly_allowlist"
+
+        // Legacy keys cleaned up during Phase 3 migration
+        private const val LEGACY_KEY_OPENCLAW_ENDPOINT = "openclaw_endpoint"
+        private const val LEGACY_KEY_OPENCLAW_TOKEN_ENC = "openclaw_token_enc"
+        private const val LEGACY_KEY_OPENCLAW_AUTONOMOUS = "openclaw_autonomous"
+
         private const val KEY_THEME = "terminal_theme"
         private const val KEY_FONT_SIZE = "font_size_sp"
         private const val KEY_VIBRATION = "enable_vibration"
@@ -50,23 +68,45 @@ class TerminalPreferences @JvmOverloads constructor(
         val themeStr = prefs.getString(KEY_THEME, TerminalThemePreset.HACKER_GREEN.name)
         val theme = try {
             TerminalThemePreset.valueOf(themeStr ?: TerminalThemePreset.HACKER_GREEN.name)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             TerminalThemePreset.HACKER_GREEN
         }
 
+        val providerStr = prefs.getString(KEY_AI_PROVIDER_TYPE, AiProviderType.NONE.name)
+        val provider = try {
+            AiProviderType.valueOf(providerStr ?: AiProviderType.NONE.name)
+        } catch (_: Exception) {
+            AiProviderType.NONE
+        }
+
         val encClaudeKey = prefs.getString(KEY_CLAUDE_API_KEY_ENC, "") ?: ""
-        val encOpenClawToken = prefs.getString(KEY_OPENCLAW_TOKEN_ENC, "") ?: ""
+        val encOpenAiKey = prefs.getString(KEY_OPENAI_API_KEY_ENC, "") ?: ""
+        val encLocalToken = prefs.getString(KEY_LOCAL_OPENAI_TOKEN_ENC, "") ?: ""
+
+        val storedAllowlist = prefs.getStringSet(KEY_AGENT_READONLY_ALLOWLIST, null)
+        val allowlist = if (storedAllowlist != null) {
+            AgentCommandPolicy.sanitizeAllowlist(storedAllowlist)
+        } else {
+            AgentCommandPolicy.DEFAULT_READ_ONLY_ALLOWLIST
+        }
 
         return AgentSettings(
+            aiProviderType = provider,
             claudeApiKey = securityManager.decryptSecret(encClaudeKey),
-            claudeModel = prefs.getString(KEY_CLAUDE_MODEL, "claude-3-5-sonnet-20241022") ?: "claude-3-5-sonnet-20241022",
+            claudeModel = prefs.getString(KEY_CLAUDE_MODEL, "claude-sonnet-4-20250514") ?: "claude-sonnet-4-20250514",
             claudeSystemPrompt = prefs.getString(
                 KEY_CLAUDE_SYSTEM_PROMPT,
-                "You are Claude, an expert AI programming and Linux system assistant operating directly within a Termux Android terminal console."
+                "Eres un asistente técnico de Linux y Termux. Solo propones comandos en bloques ```sh``` para que el usuario los apruebe; nunca afirmes haber ejecutado comandos."
             ) ?: "",
-            openClawEndpoint = prefs.getString(KEY_OPENCLAW_ENDPOINT, "https://api.openclaw.io/v1") ?: "https://api.openclaw.io/v1",
-            openClawToken = securityManager.decryptSecret(encOpenClawToken),
-            openClawAutonomous = prefs.getBoolean(KEY_OPENCLAW_AUTONOMOUS, true),
+            openAiBaseUrl = prefs.getString(KEY_OPENAI_BASE_URL, "https://api.openai.com/v1") ?: "https://api.openai.com/v1",
+            openAiApiKey = securityManager.decryptSecret(encOpenAiKey),
+            openAiModel = prefs.getString(KEY_OPENAI_MODEL, "gpt-4o-mini") ?: "gpt-4o-mini",
+            localOpenAiBaseUrl = prefs.getString(KEY_LOCAL_OPENAI_BASE_URL, "http://127.0.0.1:11434/v1") ?: "http://127.0.0.1:11434/v1",
+            localOpenAiToken = securityManager.decryptSecret(encLocalToken),
+            localOpenAiModel = prefs.getString(KEY_LOCAL_OPENAI_MODEL, "qwen2.5-coder:7b") ?: "qwen2.5-coder:7b",
+            agentWorkingDir = prefs.getString(KEY_AGENT_WORKING_DIR, "~") ?: "~",
+            agentAutoApproveReadOnly = prefs.getBoolean(KEY_AGENT_AUTO_APPROVE_READONLY, false),
+            agentReadOnlyAllowlist = allowlist,
             terminalTheme = theme,
             fontSizeSp = prefs.getInt(KEY_FONT_SIZE, 13),
             enableVibration = prefs.getBoolean(KEY_VIBRATION, true),
@@ -78,23 +118,43 @@ class TerminalPreferences @JvmOverloads constructor(
 
     fun saveSettings(settings: AgentSettings) {
         val encClaudeKey = securityManager.encryptSecret(settings.claudeApiKey)
-        val encOpenClawToken = securityManager.encryptSecret(settings.openClawToken)
+        val encOpenAiKey = securityManager.encryptSecret(settings.openAiApiKey)
+        val encLocalToken = securityManager.encryptSecret(settings.localOpenAiToken)
+        val sanitizedAllowlist = AgentCommandPolicy.sanitizeAllowlist(settings.agentReadOnlyAllowlist)
 
         prefs.edit().apply {
+            putString(KEY_AI_PROVIDER_TYPE, settings.aiProviderType.name)
             putString(KEY_CLAUDE_API_KEY_ENC, encClaudeKey)
-            putString(KEY_CLAUDE_MODEL, settings.claudeModel)
-            putString(KEY_CLAUDE_SYSTEM_PROMPT, settings.claudeSystemPrompt)
-            putString(KEY_OPENCLAW_ENDPOINT, settings.openClawEndpoint)
-            putString(KEY_OPENCLAW_TOKEN_ENC, encOpenClawToken)
-            putBoolean(KEY_OPENCLAW_AUTONOMOUS, settings.openClawAutonomous)
+            putString(KEY_CLAUDE_MODEL, settings.claudeModel.trim().ifBlank { "claude-sonnet-4-20250514" })
+            putString(KEY_CLAUDE_SYSTEM_PROMPT, settings.claudeSystemPrompt.trim())
+            putString(KEY_OPENAI_BASE_URL, settings.openAiBaseUrl.trim().ifBlank { "https://api.openai.com/v1" })
+            putString(KEY_OPENAI_API_KEY_ENC, encOpenAiKey)
+            putString(KEY_OPENAI_MODEL, settings.openAiModel.trim().ifBlank { "gpt-4o-mini" })
+            putString(KEY_LOCAL_OPENAI_BASE_URL, settings.localOpenAiBaseUrl.trim().ifBlank { "http://127.0.0.1:11434/v1" })
+            putString(KEY_LOCAL_OPENAI_TOKEN_ENC, encLocalToken)
+            putString(KEY_LOCAL_OPENAI_MODEL, settings.localOpenAiModel.trim().ifBlank { "qwen2.5-coder:7b" })
+            putString(KEY_AGENT_WORKING_DIR, settings.agentWorkingDir.trim().ifBlank { "~" })
+            putBoolean(KEY_AGENT_AUTO_APPROVE_READONLY, settings.agentAutoApproveReadOnly)
+            putStringSet(KEY_AGENT_READONLY_ALLOWLIST, sanitizedAllowlist)
             putString(KEY_THEME, settings.terminalTheme.name)
             putInt(KEY_FONT_SIZE, settings.fontSizeSp)
             putBoolean(KEY_VIBRATION, settings.enableVibration)
             putBoolean(KEY_AUTO_START_BOOT, settings.autoStartOnBoot)
             putBoolean(KEY_AUTO_START_REMOTE, settings.autoStartRemoteServersOnBoot)
             putBoolean(KEY_RUN_BOOT_SCRIPTS, settings.runBootScriptsOnBoot)
+            remove(LEGACY_KEY_OPENCLAW_ENDPOINT)
+            remove(LEGACY_KEY_OPENCLAW_TOKEN_ENC)
+            remove(LEGACY_KEY_OPENCLAW_AUTONOMOUS)
             apply()
         }
+    }
+
+    fun getSensitiveSecrets(settings: AgentSettings = getSettings()): List<String> {
+        return listOf(
+            settings.claudeApiKey,
+            settings.openAiApiKey,
+            settings.localOpenAiToken
+        ).filter { it.isNotBlank() }
     }
 
     // --- REMOTE ACCESS CREDENTIALS (APP-ONLY CREATION, NO DEFAULT USER, MIN 12 CHARS) ---

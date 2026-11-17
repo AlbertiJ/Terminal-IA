@@ -5,12 +5,15 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,19 +26,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.SdStorage
-import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
@@ -73,9 +76,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import com.example.agent.AgentCommandPolicy
 import com.example.model.AgentSettings
+import com.example.model.AiProviderType
 import com.example.model.TerminalThemePreset
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AgentSettingsDialog(
     currentSettings: AgentSettings,
@@ -84,14 +90,26 @@ fun AgentSettingsDialog(
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
 
+    var aiProviderType by remember { mutableStateOf(currentSettings.aiProviderType) }
     var claudeApiKey by remember { mutableStateOf(currentSettings.claudeApiKey) }
     var claudeModel by remember { mutableStateOf(currentSettings.claudeModel) }
     var claudeSystemPrompt by remember { mutableStateOf(currentSettings.claudeSystemPrompt) }
     var showClaudeKey by remember { mutableStateOf(false) }
 
-    var openClawEndpoint by remember { mutableStateOf(currentSettings.openClawEndpoint) }
-    var openClawToken by remember { mutableStateOf(currentSettings.openClawToken) }
-    var openClawAutonomous by remember { mutableStateOf(currentSettings.openClawAutonomous) }
+    var openAiBaseUrl by remember { mutableStateOf(currentSettings.openAiBaseUrl) }
+    var openAiApiKey by remember { mutableStateOf(currentSettings.openAiApiKey) }
+    var openAiModel by remember { mutableStateOf(currentSettings.openAiModel) }
+    var showOpenAiKey by remember { mutableStateOf(false) }
+
+    var localOpenAiBaseUrl by remember { mutableStateOf(currentSettings.localOpenAiBaseUrl) }
+    var localOpenAiToken by remember { mutableStateOf(currentSettings.localOpenAiToken) }
+    var localOpenAiModel by remember { mutableStateOf(currentSettings.localOpenAiModel) }
+
+    var agentWorkingDir by remember { mutableStateOf(currentSettings.agentWorkingDir) }
+    var agentAutoApproveReadOnly by remember { mutableStateOf(currentSettings.agentAutoApproveReadOnly) }
+    var allowlistSet by remember { mutableStateOf(currentSettings.agentReadOnlyAllowlist) }
+    var allowlistDraft by remember { mutableStateOf("") }
+    var allowlistError by remember { mutableStateOf<String?>(null) }
 
     var selectedTheme by remember { mutableStateOf(currentSettings.terminalTheme) }
     var fontSizeSp by remember { mutableIntStateOf(currentSettings.fontSizeSp) }
@@ -152,14 +170,14 @@ fun AgentSettingsDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Ajustes de Termux AI",
+                            text = "Ajustes de Terminal-IA",
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
                             color = selectedTheme.primaryText
                         )
                     }
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                    IconButton(onClick = onDismiss, modifier = Modifier.minimumInteractiveComponentSize()) {
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Cerrar",
@@ -170,8 +188,8 @@ fun AgentSettingsDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Tabs: Claude, OpenClaw, Apariencia, Arranque
-                val tabTitles = listOf("Claude", "OpenClaw", "Apariencia", "Arranque")
+                // Tabs: Proveedor IA, Apariencia, Arranque
+                val tabTitles = listOf("Proveedor IA", "Apariencia", "Arranque")
                 TabRow(
                     selectedTabIndex = selectedTab,
                     containerColor = selectedTheme.surface,
@@ -203,72 +221,31 @@ fun AgentSettingsDialog(
 
                 when (selectedTab) {
                     0 -> {
-                        // Claude Agent Config
                         Text(
-                            text = "INTEGRACIÓN CON AGENTE CLAUDE",
+                            text = "PROVEEDOR DE AGENTE IA",
                             fontFamily = FontFamily.Monospace,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = selectedTheme.claudeColor
                         )
                         Text(
-                            text = "Conexión directa con la API oficial de Anthropic. Si no tienes API Key, la app opera en Modo Libre Sandbox sin ningún costo.",
+                            text = "Las claves de API se cifran con Android Keystore (AES-256-GCM) y nunca aparecen en logs ni exportaciones. Si no configuras un proveedor, el agente no simula respuestas.",
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            color = selectedTheme.primaryText.copy(alpha = 0.7f),
+                            fontSize = 10.sp,
+                            color = selectedTheme.primaryText.copy(alpha = 0.72f),
                             modifier = Modifier.padding(vertical = 4.dp)
                         )
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
 
-                        OutlinedTextField(
-                            value = claudeApiKey,
-                            onValueChange = { claudeApiKey = it },
-                            label = { Text("Anthropic API Key (sk-ant-...)") },
-                            placeholder = { Text("Opcional: Dejar vacío para modo offline gratuito") },
-                            visualTransformation = if (showClaudeKey) VisualTransformation.None else PasswordVisualTransformation(),
-                            trailingIcon = {
-                                IconButton(onClick = { showClaudeKey = !showClaudeKey }) {
-                                    Icon(
-                                        imageVector = if (showClaudeKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                        contentDescription = "Toggle Key",
-                                        tint = selectedTheme.primaryText
-                                    )
-                                }
-                            },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = selectedTheme.claudeColor,
-                                unfocusedBorderColor = selectedTheme.surface,
-                                focusedTextColor = selectedTheme.primaryText,
-                                unfocusedTextColor = selectedTheme.primaryText,
-                                focusedLabelColor = selectedTheme.claudeColor,
-                                unfocusedLabelColor = selectedTheme.primaryText.copy(alpha = 0.6f)
-                            ),
-                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("claude_api_key_input")
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Text(
-                            text = "Modelo de Claude:",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            color = selectedTheme.primaryText
-                        )
-                        val models = listOf(
-                            "claude-3-5-sonnet-20241022" to "Claude 3.5 Sonnet (Recomendado)",
-                            "claude-3-5-haiku-20241022" to "Claude 3.5 Haiku (Ultra rápido)",
-                            "claude-3-opus-20240229" to "Claude 3 Opus (Razonamiento profundo)"
-                        )
-                        for ((mId, mName) in models) {
+                        for (type in AiProviderType.entries) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { claudeModel = mId }
-                                    .padding(vertical = 4.dp),
+                                    .minimumInteractiveComponentSize()
+                                    .clickable { aiProviderType = type }
+                                    .padding(vertical = 4.dp)
+                                    .testTag("provider_option_${type.name}"),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Box(
@@ -277,29 +254,193 @@ fun AgentSettingsDialog(
                                         .clip(CircleShape)
                                         .border(
                                             2.dp,
-                                            if (claudeModel == mId) selectedTheme.claudeColor else selectedTheme.primaryText.copy(alpha = 0.4f),
+                                            if (aiProviderType == type) selectedTheme.claudeColor else selectedTheme.primaryText.copy(alpha = 0.4f),
                                             CircleShape
                                         )
-                                        .background(if (claudeModel == mId) selectedTheme.claudeColor else Color.Transparent)
+                                        .background(if (aiProviderType == type) selectedTheme.claudeColor else Color.Transparent)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = mName,
+                                    text = type.displayName,
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
-                                    color = if (claudeModel == mId) selectedTheme.primaryText else selectedTheme.primaryText.copy(alpha = 0.7f)
+                                    color = if (aiProviderType == type) selectedTheme.primaryText else selectedTheme.primaryText.copy(alpha = 0.7f)
                                 )
                             }
                         }
 
                         Spacer(modifier = Modifier.height(8.dp))
 
+                        when (aiProviderType) {
+                            AiProviderType.NONE -> {
+                                Surface(
+                                    color = selectedTheme.surface,
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "Modo sin proveedor activo: las consultas al agente indicarán que falta configurar un proveedor en nube o local en 127.0.0.1.",
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp,
+                                        color = selectedTheme.primaryText.copy(alpha = 0.8f),
+                                        modifier = Modifier.padding(10.dp)
+                                    )
+                                }
+                            }
+                            AiProviderType.ANTHROPIC_CLOUD -> {
+                                OutlinedTextField(
+                                    value = claudeApiKey,
+                                    onValueChange = { claudeApiKey = it },
+                                    label = { Text("Anthropic API Key (sk-ant-...)") },
+                                    visualTransformation = if (showClaudeKey) VisualTransformation.None else PasswordVisualTransformation(),
+                                    trailingIcon = {
+                                        IconButton(onClick = { showClaudeKey = !showClaudeKey }) {
+                                            Icon(
+                                                imageVector = if (showClaudeKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                                contentDescription = "Mostrar/Ocultar clave",
+                                                tint = selectedTheme.primaryText
+                                            )
+                                        }
+                                    },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = selectedTheme.claudeColor,
+                                        unfocusedBorderColor = selectedTheme.surface,
+                                        focusedTextColor = selectedTheme.primaryText,
+                                        unfocusedTextColor = selectedTheme.primaryText
+                                    ),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("claude_api_key_input")
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = claudeModel,
+                                    onValueChange = { claudeModel = it },
+                                    label = { Text("Modelo Anthropic") },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = selectedTheme.claudeColor,
+                                        unfocusedBorderColor = selectedTheme.surface,
+                                        focusedTextColor = selectedTheme.primaryText,
+                                        unfocusedTextColor = selectedTheme.primaryText
+                                    ),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            AiProviderType.OPENAI_CLOUD -> {
+                                OutlinedTextField(
+                                    value = openAiBaseUrl,
+                                    onValueChange = { openAiBaseUrl = it },
+                                    label = { Text("Endpoint OpenAI Compatible (HTTPS)") },
+                                    placeholder = { Text("https://api.openai.com/v1") },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = selectedTheme.claudeColor,
+                                        unfocusedBorderColor = selectedTheme.surface,
+                                        focusedTextColor = selectedTheme.primaryText,
+                                        unfocusedTextColor = selectedTheme.primaryText
+                                    ),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = openAiApiKey,
+                                    onValueChange = { openAiApiKey = it },
+                                    label = { Text("API Key (sk-...)") },
+                                    visualTransformation = if (showOpenAiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                                    trailingIcon = {
+                                        IconButton(onClick = { showOpenAiKey = !showOpenAiKey }) {
+                                            Icon(
+                                                imageVector = if (showOpenAiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                                contentDescription = "Mostrar/Ocultar clave",
+                                                tint = selectedTheme.primaryText
+                                            )
+                                        }
+                                    },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = selectedTheme.claudeColor,
+                                        unfocusedBorderColor = selectedTheme.surface,
+                                        focusedTextColor = selectedTheme.primaryText,
+                                        unfocusedTextColor = selectedTheme.primaryText
+                                    ),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("openai_api_key_input")
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = openAiModel,
+                                    onValueChange = { openAiModel = it },
+                                    label = { Text("Modelo (ej. gpt-4o-mini)") },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = selectedTheme.claudeColor,
+                                        unfocusedBorderColor = selectedTheme.surface,
+                                        focusedTextColor = selectedTheme.primaryText,
+                                        unfocusedTextColor = selectedTheme.primaryText
+                                    ),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            AiProviderType.TERMUX_LOCAL_OPENAI -> {
+                                OutlinedTextField(
+                                    value = localOpenAiBaseUrl,
+                                    onValueChange = { localOpenAiBaseUrl = it },
+                                    label = { Text("URL servidor local en Termux (solo 127.0.0.1)") },
+                                    placeholder = { Text("http://127.0.0.1:11434/v1") },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = selectedTheme.promptUser,
+                                        unfocusedBorderColor = selectedTheme.surface,
+                                        focusedTextColor = selectedTheme.primaryText,
+                                        unfocusedTextColor = selectedTheme.primaryText
+                                    ),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("local_openai_url_input")
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = localOpenAiModel,
+                                    onValueChange = { localOpenAiModel = it },
+                                    label = { Text("Modelo local (Ollama / llama.cpp)") },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = selectedTheme.promptUser,
+                                        unfocusedBorderColor = selectedTheme.surface,
+                                        focusedTextColor = selectedTheme.primaryText,
+                                        unfocusedTextColor = selectedTheme.primaryText
+                                    ),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = localOpenAiToken,
+                                    onValueChange = { localOpenAiToken = it },
+                                    label = { Text("Token Bearer opcional (si el servidor local lo exige)") },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = selectedTheme.promptUser,
+                                        unfocusedBorderColor = selectedTheme.surface,
+                                        focusedTextColor = selectedTheme.primaryText,
+                                        unfocusedTextColor = selectedTheme.primaryText
+                                    ),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
                         OutlinedTextField(
                             value = claudeSystemPrompt,
                             onValueChange = { claudeSystemPrompt = it },
-                            label = { Text("Instrucción del Sistema (Prompt)") },
+                            label = { Text("Instrucción base del sistema") },
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = selectedTheme.claudeColor,
+                                focusedBorderColor = selectedTheme.accentText,
                                 unfocusedBorderColor = selectedTheme.surface,
                                 focusedTextColor = selectedTheme.primaryText,
                                 unfocusedTextColor = selectedTheme.primaryText
@@ -307,51 +448,27 @@ fun AgentSettingsDialog(
                             textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
                             modifier = Modifier.fillMaxWidth()
                         )
-                    }
 
-                    1 -> {
-                        // OpenClaw Agent Config
+                        Spacer(modifier = Modifier.height(12.dp))
+                        HorizontalDivider(color = selectedTheme.surface)
+                        Spacer(modifier = Modifier.height(10.dp))
+
                         Text(
-                            text = "AGENTE AUTÓNOMO OPENCLAW",
+                            text = "POLÍTICA DE APROBACIÓN EN SSH REAL",
                             fontFamily = FontFamily.Monospace,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = selectedTheme.openClawColor
-                        )
-                        Text(
-                            text = "OpenClaw ejecuta flujos multi-paso autónomos en el shell (auditoría, crawling y ejecución de herramientas). Puede conectarse a un gateway remoto o usar el motor local.",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            color = selectedTheme.primaryText.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(vertical = 4.dp)
+                            color = selectedTheme.promptUser
                         )
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
 
                         OutlinedTextField(
-                            value = openClawEndpoint,
-                            onValueChange = { openClawEndpoint = it },
-                            label = { Text("Endpoint de OpenClaw Gateway / Servidor") },
-                            placeholder = { Text("https://api.openclaw.io/v1") },
+                            value = agentWorkingDir,
+                            onValueChange = { agentWorkingDir = it },
+                            label = { Text("Carpeta de trabajo permitida para el agente") },
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = selectedTheme.openClawColor,
-                                unfocusedBorderColor = selectedTheme.surface,
-                                focusedTextColor = selectedTheme.primaryText,
-                                unfocusedTextColor = selectedTheme.primaryText
-                            ),
-                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        OutlinedTextField(
-                            value = openClawToken,
-                            onValueChange = { openClawToken = it },
-                            label = { Text("Bearer Token de OpenClaw (Opcional)") },
-                            placeholder = { Text("Dejar vacío para motor local") },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = selectedTheme.openClawColor,
+                                focusedBorderColor = selectedTheme.promptUser,
                                 unfocusedBorderColor = selectedTheme.surface,
                                 focusedTextColor = selectedTheme.primaryText,
                                 unfocusedTextColor = selectedTheme.primaryText
@@ -363,36 +480,114 @@ fun AgentSettingsDialog(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .minimumInteractiveComponentSize(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                                 Text(
-                                    text = "Ejecución autónoma de herramientas",
+                                    text = "Aprobar automáticamente solo lectura",
                                     fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.sp,
+                                    fontSize = 11.sp,
                                     color = selectedTheme.primaryText
                                 )
                                 Text(
-                                    text = "Permitir a OpenClaw planificar y ejecutar pasos de diagnóstico automáticamente",
+                                    text = "Apagado por defecto. Jamás auto-aprueba borrar, instalar paquetes, chmod, mover, red saliente ni rutas externas.",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 10.sp,
-                                    color = selectedTheme.primaryText.copy(alpha = 0.6f)
+                                    color = selectedTheme.primaryText.copy(alpha = 0.65f)
                                 )
                             }
                             Switch(
-                                checked = openClawAutonomous,
-                                onCheckedChange = { openClawAutonomous = it },
+                                checked = agentAutoApproveReadOnly,
+                                onCheckedChange = { agentAutoApproveReadOnly = it },
                                 colors = SwitchDefaults.colors(
-                                    checkedThumbColor = selectedTheme.openClawColor,
+                                    checkedThumbColor = selectedTheme.promptUser,
                                     checkedTrackColor = selectedTheme.surface
                                 )
                             )
                         }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Lista blanca de comandos de lectura (${allowlistSet.size}):",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = selectedTheme.primaryText
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = allowlistDraft,
+                                onValueChange = {
+                                    allowlistDraft = it
+                                    allowlistError = null
+                                },
+                                label = { Text("Agregar comando (ej. grep)") },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = selectedTheme.accentText,
+                                    unfocusedBorderColor = selectedTheme.surface,
+                                    focusedTextColor = selectedTheme.primaryText,
+                                    unfocusedTextColor = selectedTheme.primaryText
+                                ),
+                                textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                                modifier = Modifier.weight(1f)
+                            )
+                            Button(
+                                onClick = {
+                                    AgentCommandPolicy.validateAllowlistEntry(allowlistDraft)
+                                        .onSuccess { cmd ->
+                                            allowlistSet = allowlistSet + cmd
+                                            allowlistDraft = ""
+                                            allowlistError = null
+                                        }
+                                        .onFailure { err ->
+                                            allowlistError = err.localizedMessage
+                                        }
+                                },
+                                modifier = Modifier.minimumInteractiveComponentSize()
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "Agregar", modifier = Modifier.size(16.dp))
+                            }
+                        }
+
+                        if (allowlistError != null) {
+                            Text(
+                                text = allowlistError!!,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp,
+                                color = selectedTheme.errorColor,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            for (cmd in allowlistSet.sorted()) {
+                                AssistChip(
+                                    onClick = { allowlistSet = allowlistSet - cmd },
+                                    label = {
+                                        Text("$cmd ×", fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                                    },
+                                    colors = AssistChipDefaults.assistChipColors(
+                                        containerColor = selectedTheme.surface,
+                                        labelColor = selectedTheme.primaryText
+                                    )
+                                )
+                            }
+                        }
                     }
 
-                    2 -> {
+                    1 -> {
                         // Appearance and themes
                         Text(
                             text = "TEMAS DE COLOR DEL TERMINAL",
@@ -437,7 +632,7 @@ fun AgentSettingsDialog(
                                 if (selectedTheme == preset) {
                                     Icon(
                                         imageVector = Icons.Default.Check,
-                                        contentDescription = "Selected",
+                                        contentDescription = "Seleccionado",
                                         tint = preset.primaryText,
                                         modifier = Modifier.size(16.dp)
                                     )
@@ -489,7 +684,7 @@ fun AgentSettingsDialog(
                         }
                     }
 
-                    3 -> {
+                    2 -> {
                         // Auto-boot and universal installation options
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
@@ -606,7 +801,7 @@ fun AgentSettingsDialog(
                                     color = selectedTheme.primaryText
                                 )
                                 Text(
-                                    text = "Inicia la consola web al abrir la app (el SSH local lo provee Termux).",
+                                    text = "Respeta 127.0.0.1 por defecto salvo que actives acceso LAN explícitamente.",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 10.sp,
                                     color = selectedTheme.primaryText.copy(alpha = 0.65f)
@@ -661,7 +856,7 @@ fun AgentSettingsDialog(
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
-                Divider(color = selectedTheme.surface)
+                HorizontalDivider(color = selectedTheme.surface)
                 Spacer(modifier = Modifier.height(12.dp))
 
                 // Actions
@@ -671,7 +866,8 @@ fun AgentSettingsDialog(
                 ) {
                     OutlinedButton(
                         onClick = onDismiss,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = selectedTheme.primaryText)
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = selectedTheme.primaryText),
+                        modifier = Modifier.minimumInteractiveComponentSize()
                     ) {
                         Text("Cancelar", fontFamily = FontFamily.Monospace, fontSize = 11.sp)
                     }
@@ -679,12 +875,19 @@ fun AgentSettingsDialog(
                     Button(
                         onClick = {
                             val updated = currentSettings.copy(
+                                aiProviderType = aiProviderType,
                                 claudeApiKey = claudeApiKey.trim(),
-                                claudeModel = claudeModel,
+                                claudeModel = claudeModel.trim().ifBlank { "claude-sonnet-4-20250514" },
                                 claudeSystemPrompt = claudeSystemPrompt.trim(),
-                                openClawEndpoint = openClawEndpoint.trim(),
-                                openClawToken = openClawToken.trim(),
-                                openClawAutonomous = openClawAutonomous,
+                                openAiBaseUrl = openAiBaseUrl.trim().ifBlank { "https://api.openai.com/v1" },
+                                openAiApiKey = openAiApiKey.trim(),
+                                openAiModel = openAiModel.trim().ifBlank { "gpt-4o-mini" },
+                                localOpenAiBaseUrl = localOpenAiBaseUrl.trim().ifBlank { "http://127.0.0.1:11434/v1" },
+                                localOpenAiToken = localOpenAiToken.trim(),
+                                localOpenAiModel = localOpenAiModel.trim().ifBlank { "qwen2.5-coder:7b" },
+                                agentWorkingDir = agentWorkingDir.trim().ifBlank { "~" },
+                                agentAutoApproveReadOnly = agentAutoApproveReadOnly,
+                                agentReadOnlyAllowlist = AgentCommandPolicy.sanitizeAllowlist(allowlistSet),
                                 terminalTheme = selectedTheme,
                                 fontSizeSp = fontSizeSp,
                                 enableVibration = enableVibration,
@@ -698,7 +901,9 @@ fun AgentSettingsDialog(
                             containerColor = selectedTheme.primaryText,
                             contentColor = selectedTheme.background
                         ),
-                        modifier = Modifier.testTag("save_settings_button")
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("save_settings_button")
                     ) {
                         Text("Guardar Cambios", fontFamily = FontFamily.Monospace, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }

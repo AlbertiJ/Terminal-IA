@@ -8,8 +8,13 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.agent.AgentCommandPolicy
+import com.example.agent.AgentExecutionCoordinator
+import com.example.agent.AgentSshExecutor
+import com.example.agent.AgentUiSnapshot
 import com.example.agent.ClaudeAgentService
 import com.example.agent.OpenClawAgentService
+import com.example.agent.UnifiedLlmAgentClient
 import com.example.boot.BootCompletedReceiver
 import com.example.controller.TerminalController
 import com.example.controller.TerminalLogLevel
@@ -67,6 +72,7 @@ data class TerminalUiState(
     val input: String = "",
     val settings: AgentSettings = AgentSettings(),
     val isExecuting: Boolean = false,
+    val showAgentPanel: Boolean = false,
     val showSettingsDialog: Boolean = false,
     val showQuickActions: Boolean = false,
     val showRemoteAccessDialog: Boolean = false,
@@ -94,7 +100,8 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     private val preferences = TerminalPreferences(application)
     val vfs = VirtualFileSystem(application)
-    private val claudeService = ClaudeAgentService()
+    private val unifiedLlmClient = UnifiedLlmAgentClient()
+    private val claudeService = ClaudeAgentService(unifiedLlmClient)
     private val openClawService = OpenClawAgentService()
 
     private val database = TermuxDatabase.getDatabase(application)
@@ -122,6 +129,30 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     private val _uiState = MutableStateFlow(TerminalUiState())
     val uiState: StateFlow<TerminalUiState> = _uiState.asStateFlow()
+
+    val agentCoordinator = AgentExecutionCoordinator(
+        scope = viewModelScope,
+        llmClient = unifiedLlmClient,
+        sshExecutor = AgentSshExecutor { command, workingDir ->
+            val session = activeShellSession
+                ?: return@AgentSshExecutor Result.failure(
+                    IllegalStateException("Canal SSH real desconectado. Conéctate a Termux en Modo Real.")
+                )
+            session.executeExecCommand(command, workingDir)
+        },
+        isSshConnected = {
+            _uiState.value.terminalMode == AppTerminalMode.REAL_TERMUX &&
+                activeShellSession?.isConnected() == true
+        },
+        onAuditEvent = { levelTag, message, isWarningOrError ->
+            terminalController.log(
+                level = if (isWarningOrError) TerminalLogLevel.WARNING else TerminalLogLevel.INFO,
+                tag = levelTag,
+                message = message
+            )
+        }
+    )
+    val agentUiState: StateFlow<AgentUiSnapshot> = agentCoordinator.state
 
     private var historyIndex = -1
     private var commandHistory: List<String> = emptyList()
@@ -200,6 +231,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         )
 
         val loadedSettings = preferences.getSettings()
+        terminalController.registerSensitiveValues(preferences.getSensitiveSecrets(loadedSettings))
         viewModelScope.launch {
             val dbHistory = historyRepository.getNavigationHistory()
             if (dbHistory.isNotEmpty()) {
@@ -956,7 +988,78 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
-    // --- DIALOGS & ACTIONS ---
+    // --- DIALOGS & ACTIONS (PHASE 3 AGENT APPROVAL & STOP) ---
+
+    fun openAgentPanel() {
+        vibrateKey()
+        agentCoordinator.clearError()
+        _uiState.update { it.copy(showAgentPanel = true) }
+    }
+
+    fun closeAgentPanel() {
+        _uiState.update { it.copy(showAgentPanel = false) }
+    }
+
+    fun submitAgentPrompt(prompt: String) {
+        vibrateKey()
+        agentCoordinator.submitPrompt(prompt, _uiState.value.settings)
+    }
+
+    fun approveAgentProposal(proposalId: String) {
+        vibrateKey()
+        agentCoordinator.approveProposal(proposalId, _uiState.value.settings)
+    }
+
+    fun rejectAgentProposal(proposalId: String) {
+        vibrateKey()
+        agentCoordinator.rejectProposal(proposalId, _uiState.value.settings)
+    }
+
+    fun stopAgentExecution() {
+        vibrateKey()
+        agentCoordinator.stopExecution(_uiState.value.settings)
+    }
+
+    fun updateAgentWorkingDir(newDir: String) {
+        val updated = _uiState.value.settings.copy(agentWorkingDir = newDir.trim().ifBlank { "~" })
+        preferences.saveSettings(updated)
+        _uiState.update { it.copy(settings = updated) }
+    }
+
+    fun setAgentAutoApproveReadOnly(enabled: Boolean) {
+        vibrateKey()
+        val updated = _uiState.value.settings.copy(agentAutoApproveReadOnly = enabled)
+        preferences.saveSettings(updated)
+        _uiState.update { it.copy(settings = updated) }
+        terminalController.log(
+            level = TerminalLogLevel.INFO,
+            tag = "AGENT_POLICY",
+            message = "Aprobación automática solo lectura: ${if (enabled) "ACTIVADA (lista blanca)" else "DESACTIVADA"}"
+        )
+    }
+
+    fun addReadOnlyAllowlistCommand(rawCommand: String): Result<String> {
+        val validation = AgentCommandPolicy.validateAllowlistEntry(rawCommand)
+        validation.onSuccess { cmd ->
+            val current = _uiState.value.settings
+            val updated = current.copy(agentReadOnlyAllowlist = current.agentReadOnlyAllowlist + cmd)
+            preferences.saveSettings(updated)
+            _uiState.update { it.copy(settings = updated) }
+            terminalController.log(
+                level = TerminalLogLevel.INFO,
+                tag = "AGENT_ALLOWLIST",
+                message = "Comando de lectura agregado a lista blanca: '$cmd'"
+            )
+        }
+        return validation
+    }
+
+    fun removeReadOnlyAllowlistCommand(command: String) {
+        val current = _uiState.value.settings
+        val updated = current.copy(agentReadOnlyAllowlist = current.agentReadOnlyAllowlist - command)
+        preferences.saveSettings(updated)
+        _uiState.update { it.copy(settings = updated) }
+    }
 
     fun openSettingsDialog() {
         vibrateKey()
@@ -968,8 +1071,12 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun saveSettings(newSettings: AgentSettings) {
-        preferences.saveSettings(newSettings)
-        _uiState.update { it.copy(settings = newSettings, showSettingsDialog = false) }
+        val sanitized = newSettings.copy(
+            agentReadOnlyAllowlist = AgentCommandPolicy.sanitizeAllowlist(newSettings.agentReadOnlyAllowlist)
+        )
+        preferences.saveSettings(sanitized)
+        terminalController.registerSensitiveValues(preferences.getSensitiveSecrets(sanitized))
+        _uiState.update { it.copy(settings = sanitized, showSettingsDialog = false) }
     }
 
     fun openQuickActions() {

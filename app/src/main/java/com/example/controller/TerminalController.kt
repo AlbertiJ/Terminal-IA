@@ -88,6 +88,9 @@ class TerminalController(
     private val _logs = MutableStateFlow<List<TerminalLogEntry>>(emptyList())
     val logs: StateFlow<List<TerminalLogEntry>> = _logs.asStateFlow()
 
+    @Volatile
+    private var sensitiveValues: List<String> = emptyList()
+
     private val commandRegistry = mutableMapOf<String, CommandDescriptor>()
 
     init {
@@ -95,8 +98,12 @@ class TerminalController(
         log(
             level = TerminalLogLevel.INFO,
             tag = "INIT",
-            message = "TerminalController inicializado con soporte de autocompletado y logging criptográfico."
+            message = "TerminalController inicializado con soporte de autocompletado y logging con redacción de secretos."
         )
+    }
+
+    fun registerSensitiveValues(secrets: Collection<String>) {
+        sensitiveValues = secrets.map { it.trim() }.filter { it.length >= 6 }
     }
 
     private fun registerBuiltInCommands() {
@@ -298,10 +305,11 @@ class TerminalController(
         message: String,
         sessionId: String = "main"
     ) {
+        val redactedMessage = com.example.security.SecurityManager.redactSecrets(message, sensitiveValues)
         val entry = TerminalLogEntry(
             level = level,
             tag = tag,
-            message = message,
+            message = redactedMessage,
             sessionId = sessionId
         )
 
@@ -348,12 +356,15 @@ class TerminalController(
     }
 
     /**
-     * Exports logs in formatted JSON representation.
+     * Exports logs in formatted JSON representation with secrets redacted.
      */
     fun exportLogsAsJson(): String {
         val array = JSONArray()
         for (log in _logs.value) {
-            array.put(log.toJsonObject())
+            val safeEntry = log.copy(
+                message = com.example.security.SecurityManager.redactSecrets(log.message, sensitiveValues)
+            )
+            array.put(safeEntry.toJsonObject())
         }
         return array.toString(2)
     }

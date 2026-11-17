@@ -1,20 +1,18 @@
 package com.example.security
 
 import android.content.Context
-import android.provider.Settings
-import android.util.Base64
+import com.example.ssh.AndroidKeyStoreWrappingCipher
+import com.example.ssh.KeyWrappingCipher
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
-import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
-import javax.crypto.spec.SecretKeySpec
 
 class SecurityManager @JvmOverloads constructor(
-    private val context: Context,
-    private val timeProvider: () -> Long = { System.currentTimeMillis() }
+    @Suppress("UNUSED_PARAMETER") private val context: Context,
+    private val timeProvider: () -> Long = { System.currentTimeMillis() },
+    private val secretCipher: KeyWrappingCipher = AndroidKeyStoreWrappingCipher(SECRETS_KEY_ALIAS)
 ) {
 
     private val secureRandom = SecureRandom()
@@ -33,16 +31,41 @@ class SecurityManager @JvmOverloads constructor(
     )
 
     companion object {
+        const val SECRETS_KEY_ALIAS = "terminal_ia_api_secrets_wrap"
+        const val AKS_PREFIX = "aks_v1:"
         const val CURRENT_PBKDF2_ITERATIONS = 310_000
         const val LEGACY_PBKDF2_ITERATIONS = 10_000
         private const val HASH_PREFIX = "pbkdf2_sha256"
         private const val KEY_LENGTH = 256
         private const val SALT_BYTES = 16
-        private const val GCM_IV_LENGTH = 12
-        private const val GCM_TAG_LENGTH = 128
         const val MAX_FAILED_ATTEMPTS = 5
         const val LOCKOUT_DURATION_MS = 5 * 60 * 1000L // 5 minutes
         private const val ATTEMPT_WINDOW_MS = 15 * 60 * 1000L // 15 minutes
+
+        private val SECRET_PATTERNS = listOf(
+            Regex("""sk-ant-[A-Za-z0-9_-]{8,}"""),
+            Regex("""sk-[A-Za-z0-9_-]{12,}"""),
+            Regex("""(?i)(x-api-key\s*[:=]\s*)\S+"""),
+            Regex("""(?i)(authorization\s*[:=]\s*bearer\s+)\S+"""),
+            Regex("""(?i)(bearer\s+)[A-Za-z0-9._-]{8,}""")
+        )
+
+        fun redactSecrets(text: String, knownSecrets: Collection<String> = emptyList()): String {
+            if (text.isEmpty()) return text
+            var sanitized = text
+            for (secret in knownSecrets) {
+                val clean = secret.trim()
+                if (clean.length >= 6) {
+                    sanitized = sanitized.replace(clean, "[REDACTED]")
+                }
+            }
+            sanitized = SECRET_PATTERNS[0].replace(sanitized, "[REDACTED]")
+            sanitized = SECRET_PATTERNS[1].replace(sanitized, "[REDACTED]")
+            sanitized = SECRET_PATTERNS[2].replace(sanitized) { "${it.groupValues[1]}[REDACTED]" }
+            sanitized = SECRET_PATTERNS[3].replace(sanitized) { "${it.groupValues[1]}[REDACTED]" }
+            sanitized = SECRET_PATTERNS[4].replace(sanitized) { "${it.groupValues[1]}[REDACTED]" }
+            return sanitized
+        }
     }
 
     // --- SECURE PASSWORD HASHING (PBKDF2-HMAC-SHA256) ---
@@ -83,7 +106,6 @@ class SecurityManager @JvmOverloads constructor(
         val computedHash = factory.generateSecret(spec).encoded
         spec.clearPassword()
 
-        // Constant time comparison to defeat timing attacks
         return MessageDigest.isEqual(parsed.expectedHash, computedHash)
     }
 
@@ -124,59 +146,39 @@ class SecurityManager @JvmOverloads constructor(
         }
     }
 
-    // --- SECURE ENCRYPTION FOR API KEYS (AES-256-GCM) ---
-
-    private fun getDeviceEncryptionKey(): SecretKeySpec {
-        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "termux_ai_device_key"
-        val seed = (context.packageName + ":" + androidId).toByteArray(Charsets.UTF_8)
-        val sha256 = MessageDigest.getInstance("SHA-256")
-        val keyBytes = sha256.digest(seed)
-        return SecretKeySpec(keyBytes, "AES")
-    }
+    // --- SECURE ENCRYPTION FOR API KEYS (ANDROID KEYSTORE AES-256-GCM) ---
 
     fun encryptSecret(plainText: String): String {
-        if (plainText.isBlank()) return ""
-        try {
-            val key = getDeviceEncryptionKey()
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            val iv = ByteArray(GCM_IV_LENGTH)
-            secureRandom.nextBytes(iv)
-            val gcmSpec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
-            cipher.init(Cipher.ENCRYPT_MODE, key, gcmSpec)
-            val cipherText = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
-
-            val combined = ByteArray(iv.size + cipherText.size)
-            System.arraycopy(iv, 0, combined, 0, iv.size)
-            System.arraycopy(cipherText, 0, combined, iv.size, cipherText.size)
-
-            return Base64.encodeToString(combined, Base64.NO_WRAP)
-        } catch (e: Exception) {
-            return ""
+        val trimmed = plainText.trim()
+        if (trimmed.isEmpty()) return ""
+        return try {
+            val plainBytes = trimmed.toByteArray(Charsets.UTF_8)
+            try {
+                AKS_PREFIX + secretCipher.encrypt(plainBytes)
+            } finally {
+                plainBytes.fill(0)
+            }
+        } catch (_: Exception) {
+            ""
         }
     }
 
-    fun decryptSecret(cipherBase64: String): String {
-        if (cipherBase64.isBlank()) return ""
-        try {
-            val combined = Base64.decode(cipherBase64, Base64.NO_WRAP)
-            if (combined.size < GCM_IV_LENGTH) return ""
-
-            val iv = ByteArray(GCM_IV_LENGTH)
-            System.arraycopy(combined, 0, iv, 0, GCM_IV_LENGTH)
-
-            val cipherTextSize = combined.size - GCM_IV_LENGTH
-            val cipherText = ByteArray(cipherTextSize)
-            System.arraycopy(combined, GCM_IV_LENGTH, cipherText, 0, cipherTextSize)
-
-            val key = getDeviceEncryptionKey()
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            val gcmSpec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
-            cipher.init(Cipher.DECRYPT_MODE, key, gcmSpec)
-            val plainBytes = cipher.doFinal(cipherText)
-            return String(plainBytes, Charsets.UTF_8)
-        } catch (e: Exception) {
-            // Fallback for transition from legacy plaintext if decryption fails
-            return if (!cipherBase64.startsWith("eyJ") && cipherBase64.length < 150) cipherBase64 else ""
+    fun decryptSecret(storedCipher: String): String {
+        val trimmed = storedCipher.trim()
+        if (trimmed.isEmpty()) return ""
+        // Reject legacy ANDROID_ID-encrypted or plaintext blobs
+        if (!trimmed.startsWith(AKS_PREFIX)) return ""
+        val payload = trimmed.removePrefix(AKS_PREFIX)
+        if (payload.isBlank()) return ""
+        return try {
+            val plainBytes = secretCipher.decrypt(payload)
+            try {
+                String(plainBytes, Charsets.UTF_8)
+            } finally {
+                plainBytes.fill(0)
+            }
+        } catch (_: Exception) {
+            ""
         }
     }
 

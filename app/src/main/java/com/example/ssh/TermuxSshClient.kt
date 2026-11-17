@@ -122,6 +122,13 @@ class ActiveSshShellSession(
             return@withContext Result.failure(IllegalStateException("La sesión SSH con Termux no está conectada."))
         }
         var execChannel: ChannelExec? = null
+        val job = kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]
+        val cancelHandle = job?.invokeOnCompletion {
+            try {
+                execChannel?.disconnect()
+            } catch (_: Exception) {
+            }
+        }
         try {
             execChannel = session.openChannel("exec") as ChannelExec
             val marker = "__TERMUX_IA_PWD__"
@@ -144,6 +151,9 @@ class ActiveSshShellSession(
             val deadline = System.currentTimeMillis() + timeoutMs
 
             while (true) {
+                if (job?.isCancelled == true) {
+                    throw kotlinx.coroutines.CancellationException("Ejecución SSH cancelada por el usuario.")
+                }
                 while (stdout.available() > 0) {
                     val r = stdout.read(buf)
                     if (r <= 0) break
@@ -192,9 +202,12 @@ class ActiveSshShellSession(
                     currentDir = resolvedDir
                 )
             )
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
         } catch (e: Exception) {
             Result.failure(e)
         } finally {
+            cancelHandle?.dispose()
             try {
                 execChannel?.disconnect()
             } catch (_: Exception) {
