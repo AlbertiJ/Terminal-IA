@@ -6,12 +6,17 @@ import com.example.model.AgentSettings
 import com.example.model.TerminalThemePreset
 import com.example.security.SecurityManager
 
-class TerminalPreferences(context: Context) {
+class TerminalPreferences @JvmOverloads constructor(
+    context: Context,
+    timeProvider: () -> Long = { System.currentTimeMillis() }
+) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences("termux_ai_prefs", Context.MODE_PRIVATE)
-    private val securityManager = SecurityManager(context)
+    private val securityManager = SecurityManager(context, timeProvider)
 
     companion object {
+        const val MIN_REMOTE_PASSWORD_LENGTH = 12
+
         private const val KEY_CLAUDE_API_KEY_ENC = "claude_api_key_enc"
         private const val KEY_CLAUDE_MODEL = "claude_model"
         private const val KEY_CLAUDE_SYSTEM_PROMPT = "claude_system_prompt"
@@ -26,10 +31,12 @@ class TerminalPreferences(context: Context) {
         private const val KEY_RUN_BOOT_SCRIPTS = "run_boot_scripts_on_boot"
         private const val KEY_HISTORY = "command_history"
 
-        // Web Terminal Credentials (Fase 2 hardening)
+        // Web Terminal Credentials & Network Hardening (Fase 2)
         private const val KEY_REMOTE_USER = "remote_user"
         private const val KEY_REMOTE_PASS_HASH = "remote_pass_hash"
         private const val KEY_WEB_ENABLED = "web_terminal_enabled"
+        private const val KEY_WEB_LAN_ACCESS = "web_lan_access_enabled"
+        private const val KEY_WEB_HTTPS = "web_https_enabled"
 
         // Termux Real SSH Connection Settings (Fase 1)
         private const val KEY_TERMUX_SSH_PORT = "termux_ssh_port"
@@ -90,33 +97,50 @@ class TerminalPreferences(context: Context) {
         }
     }
 
-    // --- REMOTE ACCESS CREDENTIALS (SSH / TELNET) ---
+    // --- REMOTE ACCESS CREDENTIALS (APP-ONLY CREATION, NO DEFAULT USER, MIN 12 CHARS) ---
 
     fun hasRemoteCredentials(): Boolean {
+        val user = prefs.getString(KEY_REMOTE_USER, "") ?: ""
         val passHash = prefs.getString(KEY_REMOTE_PASS_HASH, "") ?: ""
-        return passHash.isNotBlank()
+        return user.isNotBlank() && passHash.isNotBlank()
     }
 
     fun getRemoteUsername(): String {
-        return prefs.getString(KEY_REMOTE_USER, "user") ?: "user"
+        return prefs.getString(KEY_REMOTE_USER, "") ?: ""
     }
 
     fun setRemoteCredentials(username: String, plainPassword: String) {
-        val trimmedUser = username.trim().ifBlank { "user" }
+        val cleanUser = username.trim()
+        require(cleanUser.isNotBlank()) { "El nombre de usuario no puede estar vacío." }
+        require(plainPassword.length >= MIN_REMOTE_PASSWORD_LENGTH) {
+            "La contraseña debe tener al menos $MIN_REMOTE_PASSWORD_LENGTH caracteres."
+        }
         val saltedHash = securityManager.hashPassword(plainPassword)
         prefs.edit().apply {
-            putString(KEY_REMOTE_USER, trimmedUser)
+            putString(KEY_REMOTE_USER, cleanUser)
             putString(KEY_REMOTE_PASS_HASH, saltedHash)
             apply()
         }
     }
 
+    fun clearRemoteCredentials() {
+        prefs.edit()
+            .remove(KEY_REMOTE_USER)
+            .remove(KEY_REMOTE_PASS_HASH)
+            .apply()
+    }
+
     fun verifyRemoteCredentials(username: String, plainPassword: String): Boolean {
         val storedUser = getRemoteUsername()
         val storedHash = prefs.getString(KEY_REMOTE_PASS_HASH, "") ?: ""
-        if (storedHash.isBlank()) return false
-        if (!username.trim().equals(storedUser, ignoreCase = false)) return false
-        return securityManager.verifyPassword(plainPassword, storedHash)
+        if (storedUser.isBlank() || storedHash.isBlank()) return false
+        if (username.trim() != storedUser) return false
+        val valid = securityManager.verifyPassword(plainPassword, storedHash)
+        if (valid && securityManager.needsPasswordRehash(storedHash)) {
+            val upgradedHash = securityManager.hashPassword(plainPassword)
+            prefs.edit().putString(KEY_REMOTE_PASS_HASH, upgradedHash).apply()
+        }
+        return valid
     }
 
     fun getTermuxSshPort(): Int = prefs.getInt(KEY_TERMUX_SSH_PORT, 8022)
@@ -144,6 +168,18 @@ class TerminalPreferences(context: Context) {
 
     fun setWebServerEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_WEB_ENABLED, enabled).apply()
+    }
+
+    fun isWebLanAccessEnabled(): Boolean = prefs.getBoolean(KEY_WEB_LAN_ACCESS, false)
+
+    fun setWebLanAccessEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_WEB_LAN_ACCESS, enabled).apply()
+    }
+
+    fun isWebHttpsEnabled(): Boolean = prefs.getBoolean(KEY_WEB_HTTPS, false)
+
+    fun setWebHttpsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_WEB_HTTPS, enabled).apply()
     }
 
     // --- COMMAND HISTORY ---

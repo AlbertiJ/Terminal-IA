@@ -115,7 +115,9 @@ class BootCompletedReceiver : BroadcastReceiver() {
             }
 
             if (settings.autoStartRemoteServersOnBoot) {
-                logBuilder.append("[CONFIG] Inicio automático de servidores remotos habilitado al abrir consola.\n")
+                val scopeLabel = if (prefs.isWebLanAccessEnabled()) "0.0.0.0 (LAN habilitada)" else "solo 127.0.0.1"
+                val credsState = if (prefs.hasRemoteCredentials()) "credenciales configuradas" else "bloqueado hasta configurar credenciales en la app"
+                logBuilder.append("[CONFIG] Auto-inicio Terminal Web al abrir app: $scopeLabel ($credsState).\n")
             }
 
             val finalLog = logBuilder.toString().trimEnd()

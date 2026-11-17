@@ -12,51 +12,116 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
-class SecurityManager(private val context: Context) {
+class SecurityManager @JvmOverloads constructor(
+    private val context: Context,
+    private val timeProvider: () -> Long = { System.currentTimeMillis() }
+) {
 
     private val secureRandom = SecureRandom()
     private val failedAttempts = ConcurrentHashMap<String, FailedAttempt>()
 
-    data class FailedAttempt(var count: Int, var lockoutUntil: Long)
+    data class FailedAttempt(
+        var count: Int,
+        var lockoutUntil: Long,
+        var lastAttemptAt: Long
+    )
+
+    private data class ParsedPasswordHash(
+        val iterations: Int,
+        val salt: ByteArray,
+        val expectedHash: ByteArray
+    )
 
     companion object {
-        private const val ITERATIONS = 10000
+        const val CURRENT_PBKDF2_ITERATIONS = 310_000
+        const val LEGACY_PBKDF2_ITERATIONS = 10_000
+        private const val HASH_PREFIX = "pbkdf2_sha256"
         private const val KEY_LENGTH = 256
         private const val SALT_BYTES = 16
         private const val GCM_IV_LENGTH = 12
         private const val GCM_TAG_LENGTH = 128
-        private const val MAX_FAILED_ATTEMPTS = 5
-        private const val LOCKOUT_DURATION_MS = 5 * 60 * 1000L // 5 minutes
+        const val MAX_FAILED_ATTEMPTS = 5
+        const val LOCKOUT_DURATION_MS = 5 * 60 * 1000L // 5 minutes
+        private const val ATTEMPT_WINDOW_MS = 15 * 60 * 1000L // 15 minutes
     }
 
     // --- SECURE PASSWORD HASHING (PBKDF2-HMAC-SHA256) ---
 
     fun hashPassword(password: String): String {
+        return hashPasswordWithIterations(password, CURRENT_PBKDF2_ITERATIONS)
+    }
+
+    fun hashPasswordWithIterations(password: String, iterations: Int): String {
+        require(iterations >= 1) { "PBKDF2 iterations must be positive" }
         val salt = ByteArray(SALT_BYTES)
         secureRandom.nextBytes(salt)
 
-        val spec = PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_LENGTH)
+        val spec = PBEKeySpec(password.toCharArray(), salt, iterations, KEY_LENGTH)
         val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
         val hash = factory.generateSecret(spec).encoded
+        spec.clearPassword()
 
         val saltHex = bytesToHex(salt)
         val hashHex = bytesToHex(hash)
-        return "$saltHex:$hashHex"
+        return "$HASH_PREFIX\$$iterations\$$saltHex:$hashHex"
+    }
+
+    fun getHashIterations(storedHashWithSalt: String): Int? {
+        return parseStoredPasswordHash(storedHashWithSalt)?.iterations
+    }
+
+    fun needsPasswordRehash(storedHashWithSalt: String): Boolean {
+        val iters = getHashIterations(storedHashWithSalt) ?: return false
+        return iters < CURRENT_PBKDF2_ITERATIONS
     }
 
     fun verifyPassword(password: String, storedHashWithSalt: String): Boolean {
-        val parts = storedHashWithSalt.split(":")
-        if (parts.size != 2) return false
+        val parsed = parseStoredPasswordHash(storedHashWithSalt) ?: return false
 
-        val salt = hexToBytes(parts[0])
-        val expectedHash = hexToBytes(parts[1])
-
-        val spec = PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_LENGTH)
+        val spec = PBEKeySpec(password.toCharArray(), parsed.salt, parsed.iterations, KEY_LENGTH)
         val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
         val computedHash = factory.generateSecret(spec).encoded
+        spec.clearPassword()
 
         // Constant time comparison to defeat timing attacks
-        return MessageDigest.isEqual(expectedHash, computedHash)
+        return MessageDigest.isEqual(parsed.expectedHash, computedHash)
+    }
+
+    private fun parseStoredPasswordHash(stored: String): ParsedPasswordHash? {
+        val trimmed = stored.trim()
+        if (trimmed.isEmpty()) return null
+
+        val iterations: Int
+        val saltAndHashPart: String
+
+        if (trimmed.startsWith("$HASH_PREFIX\$")) {
+            val headerSplit = trimmed.split("$", limit = 3)
+            if (headerSplit.size != 3) return null
+            iterations = headerSplit[1].toIntOrNull() ?: return null
+            if (iterations !in 1..5_000_000) return null
+            saltAndHashPart = headerSplit[2]
+        } else {
+            iterations = LEGACY_PBKDF2_ITERATIONS
+            saltAndHashPart = trimmed
+        }
+
+        val parts = saltAndHashPart.split(":")
+        if (parts.size != 2) return null
+        val saltHex = parts[0]
+        val hashHex = parts[1]
+        if (saltHex.isEmpty() || hashHex.isEmpty() || saltHex.length % 2 != 0 || hashHex.length % 2 != 0) {
+            return null
+        }
+
+        return try {
+            ParsedPasswordHash(
+                iterations = iterations,
+                salt = hexToBytes(saltHex),
+                expectedHash = hexToBytes(hashHex)
+            )
+        } catch (_: Exception) {
+            null
+        }
     }
 
     // --- SECURE ENCRYPTION FOR API KEYS (AES-256-GCM) ---
@@ -130,31 +195,41 @@ class SecurityManager(private val context: Context) {
 
     fun isIpLockedOut(ip: String): Boolean {
         val record = failedAttempts[ip] ?: return false
-        val now = System.currentTimeMillis()
-        if (now > record.lockoutUntil) {
+        val now = timeProvider()
+        if (record.count >= MAX_FAILED_ATTEMPTS) {
+            if (now <= record.lockoutUntil) {
+                return true
+            }
             failedAttempts.remove(ip)
             return false
         }
-        return record.count >= MAX_FAILED_ATTEMPTS
+        return false
     }
 
     fun getRemainingLockoutSeconds(ip: String): Long {
         val record = failedAttempts[ip] ?: return 0
-        val remaining = record.lockoutUntil - System.currentTimeMillis()
-        return if (remaining > 0) remaining / 1000 else 0
+        if (record.count < MAX_FAILED_ATTEMPTS) return 0
+        val remaining = record.lockoutUntil - timeProvider()
+        return if (remaining > 0) (remaining + 999) / 1000 else 0
     }
 
     fun recordFailedAttempt(ip: String): Int {
-        val now = System.currentTimeMillis()
+        val now = timeProvider()
         val record = failedAttempts.compute(ip) { _, existing ->
-            if (existing == null || now > existing.lockoutUntil) {
-                FailedAttempt(1, 0)
-            } else {
-                existing.count++
-                if (existing.count >= MAX_FAILED_ATTEMPTS) {
-                    existing.lockoutUntil = now + LOCKOUT_DURATION_MS
+            when {
+                existing == null -> FailedAttempt(count = 1, lockoutUntil = 0L, lastAttemptAt = now)
+                existing.count >= MAX_FAILED_ATTEMPTS && now > existing.lockoutUntil ->
+                    FailedAttempt(count = 1, lockoutUntil = 0L, lastAttemptAt = now)
+                existing.count < MAX_FAILED_ATTEMPTS && (now - existing.lastAttemptAt) > ATTEMPT_WINDOW_MS ->
+                    FailedAttempt(count = 1, lockoutUntil = 0L, lastAttemptAt = now)
+                else -> {
+                    existing.count++
+                    existing.lastAttemptAt = now
+                    if (existing.count >= MAX_FAILED_ATTEMPTS) {
+                        existing.lockoutUntil = now + LOCKOUT_DURATION_MS
+                    }
+                    existing
                 }
-                existing
             }
         }
         return record?.count ?: 1

@@ -1,6 +1,7 @@
 package com.example.ssh
 
 import android.content.Context
+import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.ChannelShell
 import com.jcraft.jsch.HostKey
 import com.jcraft.jsch.HostKeyRepository
@@ -16,6 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.ConnectException
@@ -70,6 +72,12 @@ sealed class SshDiagnosticResult {
     data class Failure(val error: SshConnectionError) : SshDiagnosticResult()
 }
 
+data class SshExecOutput(
+    val output: String,
+    val exitCode: Int,
+    val currentDir: String
+)
+
 class ActiveSshShellSession(
     private val session: Session,
     private val channel: ChannelShell,
@@ -102,6 +110,95 @@ class ActiveSshShellSession(
         try {
             channel.setPtySize(safeCols, safeRows, safeCols * 16, safeRows * 32)
         } catch (_: Exception) {
+        }
+    }
+
+    suspend fun executeExecCommand(
+        command: String,
+        currentDir: String = "~",
+        timeoutMs: Int = 15_000
+    ): Result<SshExecOutput> = withContext(Dispatchers.IO) {
+        if (!isConnected()) {
+            return@withContext Result.failure(IllegalStateException("La sesión SSH con Termux no está conectada."))
+        }
+        var execChannel: ChannelExec? = null
+        try {
+            execChannel = session.openChannel("exec") as ChannelExec
+            val marker = "__TERMUX_IA_PWD__"
+            val cdPrefix = if (currentDir.isBlank() || currentDir == "~") {
+                "cd \"\$HOME\""
+            } else {
+                "cd -- '${currentDir.replace("'", "'\"'\"'")}' 2>/dev/null || cd \"\$HOME\""
+            }
+            val script = "$cdPrefix\n$command\n__ec=\$?\nprintf '\\n${marker}:%s\\n' \"\$PWD\"\nexit \$__ec"
+            execChannel.setCommand(script)
+            execChannel.setInputStream(null)
+
+            val stdout = execChannel.inputStream
+            val stderr = execChannel.errStream
+            execChannel.connect(TermuxSshClient.CONNECT_TIMEOUT_MS)
+
+            val outBuf = ByteArrayOutputStream()
+            val errBuf = ByteArrayOutputStream()
+            val buf = ByteArray(4096)
+            val deadline = System.currentTimeMillis() + timeoutMs
+
+            while (true) {
+                while (stdout.available() > 0) {
+                    val r = stdout.read(buf)
+                    if (r <= 0) break
+                    outBuf.write(buf, 0, r)
+                }
+                while (stderr.available() > 0) {
+                    val r = stderr.read(buf)
+                    if (r <= 0) break
+                    errBuf.write(buf, 0, r)
+                }
+                if (execChannel.isClosed && stdout.available() == 0 && stderr.available() == 0) {
+                    break
+                }
+                if (System.currentTimeMillis() > deadline) {
+                    return@withContext Result.failure(SocketTimeoutException("Tiempo de espera agotado al ejecutar comando en Termux SSH."))
+                }
+                Thread.sleep(25)
+            }
+
+            val rawOut = outBuf.toString(Charsets.UTF_8.name())
+            val rawErr = errBuf.toString(Charsets.UTF_8.name()).trimEnd()
+            var resolvedDir = currentDir
+            val filteredOutLines = mutableListOf<String>()
+            for (line in rawOut.lines()) {
+                if (line.startsWith("$marker:")) {
+                    val candidate = line.removePrefix("$marker:").trim()
+                    if (candidate.isNotEmpty()) resolvedDir = candidate
+                } else {
+                    filteredOutLines.add(line)
+                }
+            }
+
+            val combined = buildString {
+                val cleanOut = filteredOutLines.joinToString("\n").trimEnd()
+                if (cleanOut.isNotEmpty()) append(cleanOut)
+                if (rawErr.isNotEmpty()) {
+                    if (isNotEmpty()) append("\n")
+                    append(rawErr)
+                }
+            }
+
+            Result.success(
+                SshExecOutput(
+                    output = combined,
+                    exitCode = execChannel.exitStatus,
+                    currentDir = resolvedDir
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            try {
+                execChannel?.disconnect()
+            } catch (_: Exception) {
+            }
         }
     }
 

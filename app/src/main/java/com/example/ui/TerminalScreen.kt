@@ -486,10 +486,16 @@ fun TerminalScreen(viewModel: TerminalViewModel) {
                 theme = theme,
                 isWebRunning = uiState.isWebTerminalRunning,
                 webPort = uiState.webTerminalPort,
+                isLanAccessEnabled = uiState.isWebLanAccessEnabled,
+                isHttpsEnabled = uiState.isWebHttpsEnabled,
+                isRealSshConnected = uiState.terminalMode == AppTerminalMode.REAL_TERMUX &&
+                    uiState.realSshConnectionState is RealSshConnectionState.Connected,
                 deviceIps = uiState.deviceIps,
                 currentUsername = uiState.remoteUsername,
                 hasCredentials = uiState.hasRemoteCredentials,
                 onToggleWebServer = { enabled, port -> viewModel.toggleWebTerminal(enabled, port) },
+                onToggleLanAccess = { enabled -> viewModel.setWebLanAccessEnabled(enabled) },
+                onToggleHttps = { enabled -> viewModel.setWebHttpsEnabled(enabled) },
                 onSaveCredentials = { user, pass -> viewModel.saveRemoteCredentials(user, pass) },
                 onDismiss = { viewModel.closeRemoteAccessDialog() }
             )

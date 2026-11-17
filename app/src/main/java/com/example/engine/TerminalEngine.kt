@@ -132,7 +132,7 @@ class TerminalEngine(
                 val sdf = SimpleDateFormat("EEE MMM dd HH:mm:ss z yyyy", Locale.US)
                 onOutputLine(TerminalLine(text = sdf.format(Date()), type = LineType.OUTPUT))
             }
-            "whoami" -> onOutputLine(TerminalLine(text = "${preferences.getRemoteUsername()}@termux-ai", type = LineType.OUTPUT))
+            "whoami" -> onOutputLine(TerminalLine(text = "${preferences.getRemoteUsername().ifBlank { "practica" }}@sandbox", type = LineType.OUTPUT))
             "uname" -> {
                 val unameInfo = "Linux termux-ai 5.15.0-arm64 Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}) aarch64 GNU/Linux"
                 onOutputLine(TerminalLine(text = unameInfo, type = LineType.OUTPUT))
@@ -297,7 +297,7 @@ class TerminalEngine(
         if (args.isEmpty()) {
             onOutputLine(
                 TerminalLine(
-                    text = "Uso: passwd <nueva_contraseña> o passwd <usuario> <nueva_contraseña>\nEjemplo: passwd admin MiClaveSegura2026",
+                    text = "Uso: passwd <usuario> <nueva_contraseña> (mínimo ${TerminalPreferences.MIN_REMOTE_PASSWORD_LENGTH} caracteres)\nEjemplo: passwd admin MiClaveSegura2026!",
                     type = LineType.SYSTEM
                 )
             )
@@ -310,15 +310,30 @@ class TerminalEngine(
             Pair(args[0], args[1])
         }
 
-        if (newPass.length < 4) {
-            onOutputLine(TerminalLine(text = "Error: La contraseña debe tener al menos 4 caracteres por seguridad.", type = LineType.ERROR))
+        if (username.isBlank()) {
+            onOutputLine(
+                TerminalLine(
+                    text = "Error: Debes indicar el usuario (ej. passwd admin MiClaveSegura2026!).",
+                    type = LineType.ERROR
+                )
+            )
+            return
+        }
+
+        if (newPass.length < TerminalPreferences.MIN_REMOTE_PASSWORD_LENGTH) {
+            onOutputLine(
+                TerminalLine(
+                    text = "Error: La contraseña debe tener al menos ${TerminalPreferences.MIN_REMOTE_PASSWORD_LENGTH} caracteres por seguridad.",
+                    type = LineType.ERROR
+                )
+            )
             return
         }
 
         preferences.setRemoteCredentials(username, newPass)
         onOutputLine(
             TerminalLine(
-                text = "[ÉXITO] Credenciales guardadas y encriptadas con PBKDF2-SHA256 (10,000 iteraciones + Salt criptográfico).\nUsuario: $username",
+                text = "[ÉXITO] Credenciales guardadas y encriptadas con PBKDF2-HMAC-SHA256 (${com.example.security.SecurityManager.CURRENT_PBKDF2_ITERATIONS} iteraciones + Salt criptográfico).\nUsuario: $username",
                 type = LineType.SYSTEM
             )
         )

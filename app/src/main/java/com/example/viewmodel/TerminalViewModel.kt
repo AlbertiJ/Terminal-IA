@@ -24,6 +24,8 @@ import com.example.model.SessionType
 import com.example.model.TerminalLine
 import com.example.model.TerminalSession
 import com.example.script.ScriptManager
+import com.example.server.RealTerminalExecutor
+import com.example.server.WebRealExecResult
 import com.example.server.WebTerminalServer
 import com.example.ssh.ActiveSshShellSession
 import com.example.ssh.SshConnectionError
@@ -72,9 +74,11 @@ data class TerminalUiState(
     val isSplitScreenMode: Boolean = false,
     val isWebTerminalRunning: Boolean = false,
     val webTerminalPort: Int = 8080,
+    val isWebLanAccessEnabled: Boolean = false,
+    val isWebHttpsEnabled: Boolean = false,
     val deviceIps: List<String> = emptyList(),
     val hasRemoteCredentials: Boolean = false,
-    val remoteUsername: String = "user",
+    val remoteUsername: String = "",
     val showScriptManagerDialog: Boolean = false,
     val showLogsDialog: Boolean = false,
     val autocompleteSuggestions: List<String> = emptyList(),
@@ -138,10 +142,57 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             }
         )
 
+        val realExecutor = object : RealTerminalExecutor {
+            override fun isRealModeConnected(): Boolean {
+                return _uiState.value.terminalMode == AppTerminalMode.REAL_TERMUX &&
+                    activeShellSession?.isConnected() == true
+            }
+
+            override suspend fun executeCommand(command: String, currentDir: String): WebRealExecResult {
+                val session = activeShellSession
+                if (_uiState.value.terminalMode != AppTerminalMode.REAL_TERMUX || session == null || !session.isConnected()) {
+                    return WebRealExecResult(
+                        success = false,
+                        output = "",
+                        currentDir = currentDir,
+                        error = "Modo Real (Termux SSH) desconectado.",
+                        realModeConnected = false
+                    )
+                }
+
+                val execRes = session.executeExecCommand(command, currentDir)
+                return execRes.fold(
+                    onSuccess = { out ->
+                        terminalController.log(
+                            level = TerminalLogLevel.COMMAND,
+                            tag = "WEB_SSH_EXEC",
+                            message = "$command (exit ${out.exitCode}, dir ${out.currentDir})"
+                        )
+                        WebRealExecResult(
+                            success = out.exitCode == 0,
+                            output = out.output,
+                            currentDir = out.currentDir,
+                            error = if (out.exitCode != 0 && out.output.isBlank()) "Código de salida: ${out.exitCode}" else null,
+                            realModeConnected = true
+                        )
+                    },
+                    onFailure = { err ->
+                        WebRealExecResult(
+                            success = false,
+                            output = "",
+                            currentDir = currentDir,
+                            error = err.localizedMessage ?: "Error ejecutando comando SSH.",
+                            realModeConnected = session.isConnected()
+                        )
+                    }
+                )
+            }
+        }
+
         webServer = WebTerminalServer(
             context = application,
             preferences = preferences,
-            engine = engine,
+            realExecutor = realExecutor,
             onLogMessage = { text, lineType ->
                 val activeId = _uiState.value.activeSessionId
                 appendLine(activeId, TerminalLine(text = text, type = lineType))
@@ -210,7 +261,10 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         )
 
         val ips = NetworkUtils.getDeviceIpAddresses()
-        val shouldStartWeb = preferences.isWebServerEnabled() || loadedSettings.autoStartRemoteServersOnBoot
+        val hasCreds = preferences.hasRemoteCredentials()
+        val lanAccess = preferences.isWebLanAccessEnabled()
+        val httpsEnabled = preferences.isWebHttpsEnabled()
+        val shouldStartWeb = (preferences.isWebServerEnabled() || loadedSettings.autoStartRemoteServersOnBoot) && hasCreds
         val termuxInstalled = TermuxSetupHelper.isTermuxInstalled(application)
         val savedSshPort = preferences.getTermuxSshPort()
         val savedSshUser = preferences.getTermuxSshUser()
@@ -233,8 +287,10 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             settings = loadedSettings,
             isWebTerminalRunning = shouldStartWeb,
             webTerminalPort = 8080,
+            isWebLanAccessEnabled = lanAccess,
+            isWebHttpsEnabled = httpsEnabled,
             deviceIps = ips,
-            hasRemoteCredentials = preferences.hasRemoteCredentials(),
+            hasRemoteCredentials = hasCreds,
             remoteUsername = preferences.getRemoteUsername()
         )
 
@@ -245,7 +301,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         }
 
         if (shouldStartWeb) {
-            webServer.start(8080)
+            webServer.start(8080, allowLan = lanAccess, useHttps = httpsEnabled)
         }
     }
 
@@ -756,12 +812,29 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     // --- WEB TERMINAL SERVER ---
 
     fun startWebTerminal(port: Int = 8080) {
-        webServer.start(port)
+        if (!preferences.hasRemoteCredentials()) {
+            val sessionId = _uiState.value.activeSessionId
+            appendLine(
+                sessionId,
+                TerminalLine(
+                    text = "[SEGURIDAD] Configura usuario y contraseña (mín. 12 caracteres) en Acceso Remoto antes de iniciar la Terminal Web.",
+                    type = LineType.ERROR
+                )
+            )
+            preferences.setWebServerEnabled(false)
+            _uiState.update { it.copy(isWebTerminalRunning = false) }
+            return
+        }
+        val allowLan = preferences.isWebLanAccessEnabled()
+        val useHttps = preferences.isWebHttpsEnabled()
+        webServer.start(port, allowLan = allowLan, useHttps = useHttps)
         preferences.setWebServerEnabled(true)
         _uiState.update {
             it.copy(
                 isWebTerminalRunning = true,
                 webTerminalPort = port,
+                isWebLanAccessEnabled = allowLan,
+                isWebHttpsEnabled = useHttps,
                 deviceIps = NetworkUtils.getDeviceIpAddresses()
             )
         }
@@ -779,6 +852,33 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             startWebTerminal(port)
         } else {
             stopWebTerminal()
+        }
+    }
+
+    fun setWebLanAccessEnabled(enabled: Boolean) {
+        vibrateKey()
+        preferences.setWebLanAccessEnabled(enabled)
+        _uiState.update {
+            it.copy(
+                isWebLanAccessEnabled = enabled,
+                deviceIps = NetworkUtils.getDeviceIpAddresses()
+            )
+        }
+        if (_uiState.value.isWebTerminalRunning && preferences.hasRemoteCredentials()) {
+            val port = _uiState.value.webTerminalPort
+            webServer.stop()
+            webServer.start(port, allowLan = enabled, useHttps = preferences.isWebHttpsEnabled())
+        }
+    }
+
+    fun setWebHttpsEnabled(enabled: Boolean) {
+        vibrateKey()
+        preferences.setWebHttpsEnabled(enabled)
+        _uiState.update { it.copy(isWebHttpsEnabled = enabled) }
+        if (_uiState.value.isWebTerminalRunning && preferences.hasRemoteCredentials()) {
+            val port = _uiState.value.webTerminalPort
+            webServer.stop()
+            webServer.start(port, allowLan = preferences.isWebLanAccessEnabled(), useHttps = enabled)
         }
     }
 
@@ -826,7 +926,9 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
                 showRemoteAccessDialog = true,
                 deviceIps = ips,
                 hasRemoteCredentials = preferences.hasRemoteCredentials(),
-                remoteUsername = preferences.getRemoteUsername()
+                remoteUsername = preferences.getRemoteUsername(),
+                isWebLanAccessEnabled = preferences.isWebLanAccessEnabled(),
+                isWebHttpsEnabled = preferences.isWebHttpsEnabled()
             )
         }
     }
@@ -836,15 +938,22 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun saveRemoteCredentials(username: String, pass: String) {
-        preferences.setRemoteCredentials(username, pass)
+        val cleanUser = username.trim()
+        preferences.setRemoteCredentials(cleanUser, pass)
         _uiState.update {
             it.copy(
-                hasRemoteCredentials = true,
-                remoteUsername = username
+                hasRemoteCredentials = preferences.hasRemoteCredentials(),
+                remoteUsername = preferences.getRemoteUsername()
             )
         }
         val sessionId = _uiState.value.activeSessionId
-        appendLine(sessionId, TerminalLine(text = "[Credenciales web configuradas para '$username']", type = LineType.SYSTEM))
+        appendLine(
+            sessionId,
+            TerminalLine(
+                text = "[Credenciales web configuradas para '$cleanUser' con PBKDF2-HMAC-SHA256 (${com.example.security.SecurityManager.CURRENT_PBKDF2_ITERATIONS} iter.)]",
+                type = LineType.SYSTEM
+            )
+        )
     }
 
     // --- DIALOGS & ACTIONS ---
